@@ -61,20 +61,25 @@
   <input type="range" id="torque" min="10" max="120" step="5" value="60" />
   <label>Жёсткость стойки <span class="val" id="v-stiff">×1.00</span></label>
   <input type="range" id="stiffness" min="0.2" max="2" step="0.1" value="1" />
+  <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
+  <input type="range" id="strike-rest" min="0.05" max="0.6" step="0.05" value="0.25" />
+  <label>Время контакта, мс <span class="val" id="v-strike-time">8</span></label>
+  <input type="range" id="strike-time" min="2" max="20" step="1" value="8" />
   <button id="punch">Удар</button>
   <button id="reset">Сброс</button>
 </div>
 
 <div class="panel" id="readout">
   <h2>Замеры</h2>
-  <div class="row"><span class="dim">Скорость кисти</span><b id="r-speed">—</b></div>
-  <div class="row"><span class="dim">Пиковая сила</span><b id="r-peak">—</b></div>
-  <div class="row"><span class="dim">Импульс (по груше)</span><b id="r-impulse">—</b></div>
-  <div class="row"><span class="dim">Импульс (по контакту)</span><b id="r-impulse-force">—</b></div>
+  <div class="row"><span class="dim">Скорость кисти в ударе</span><b id="r-speed">—</b></div>
+  <div class="row"><span class="dim">Эффективная масса руки</span><b id="r-effmass">—</b></div>
+  <div class="row"><span class="dim">Эффективная масса груши</span><b id="r-bagmass">—</b></div>
+  <div class="row"><span class="dim">Импульс удара (формула)</span><b id="r-impulse">—</b></div>
+  <div class="row"><span class="dim">Средняя сила</span><b id="r-force">—</b></div>
+  <div class="row"><span class="dim">Импульс по груше (проверка)</span><b id="r-impulse-check">—</b></div>
+  <div class="row"><span class="dim">Скорость груши</span><b id="r-bagspeed">—</b></div>
   <div class="row"><span class="dim">Энергия в груше</span><b id="r-energy">—</b></div>
-  <div class="row"><span class="dim">Длительность контакта</span><b id="r-dur">—</b></div>
-  <div class="row"><span class="dim">Эффективная масса</span><b id="r-effmass">—</b></div>
-  <div class="row"><span class="dim">Ход корпуса</span><b id="r-body">—</b></div>
+  <div class="row"><span class="dim">Время контакта</span><b id="r-dur">—</b></div>
   <h2 style="margin-top:10px">Выведено из параметров</h2>
   <div class="row"><span class="dim">Масса руки</span><b id="d-mass">—</b></div>
   <div class="row"><span class="dim">Дальность от плеча</span><b id="d-reach">—</b></div>
@@ -83,7 +88,7 @@
   <div class="row"><span class="dim">Цена разгона</span><b id="d-cost">—</b></div>
 </div>
 
-<div id="hint">Пятнадцать модулей, настоящие массы, счёт в движке. Ползунки слева меняют тело, справа — что из этого следует.</div>
+<div id="hint">Пятнадцать модулей, настоящие массы. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело, справа — что из этого следует.</div>
 
 <script>
 (function() {
@@ -34922,25 +34927,41 @@ void main() {
 		hz: .36,
 		mass: 20
 	};
+	var STRIKE = {
+		restitution: .25,
+		contactMs: 8
+	};
+	var SETTLE_SECONDS = .6;
+	var SOLVER_ITERATIONS = 16;
+	var GROUPS = {
+		world: 65537,
+		bag: 131073,
+		hand: 65538
+	};
 	var ui = {
 		mass: document.getElementById("mass"),
 		len: document.getElementById("len"),
 		torque: document.getElementById("torque"),
 		stiffness: document.getElementById("stiffness"),
+		strikeRest: document.getElementById("strike-rest"),
+		strikeTime: document.getElementById("strike-time"),
 		vMass: document.getElementById("v-mass"),
 		vLen: document.getElementById("v-len"),
 		vTorque: document.getElementById("v-torque"),
 		vStiff: document.getElementById("v-stiff"),
+		vStrikeRest: document.getElementById("v-strike-rest"),
+		vStrikeTime: document.getElementById("v-strike-time"),
 		punch: document.getElementById("punch"),
 		reset: document.getElementById("reset"),
 		rSpeed: document.getElementById("r-speed"),
-		rPeak: document.getElementById("r-peak"),
+		rEffMass: document.getElementById("r-effmass"),
+		rBagMass: document.getElementById("r-bagmass"),
 		rImpulse: document.getElementById("r-impulse"),
-		rImpulseForce: document.getElementById("r-impulse-force"),
+		rForce: document.getElementById("r-force"),
+		rImpulseCheck: document.getElementById("r-impulse-check"),
+		rBagSpeed: document.getElementById("r-bagspeed"),
 		rEnergy: document.getElementById("r-energy"),
 		rDur: document.getElementById("r-dur"),
-		rEffMass: document.getElementById("r-effmass"),
-		rBody: document.getElementById("r-body"),
 		dMass: document.getElementById("d-mass"),
 		dReach: document.getElementById("d-reach"),
 		dInertia: document.getElementById("d-inertia"),
@@ -34994,52 +35015,117 @@ void main() {
 	var meshes = {};
 	var bagMaterial = null;
 	var bagBodyRef = null;
+	var bagCollider = null;
 	var flashUntil = 0;
 	var lastHand = null;
+	var lastHandVel = null;
 	var handCollider = null;
+	var handHalf = null;
 	var bodyStartX = 0;
+	var workTimestep = 1 / 240;
+	var sincePunch = 0;
 	var measure = {
-		tipSpeed: 0,
 		maxSpeed: 0,
-		peak: 0,
+		handSpeed: 0,
+		strikeApplied: false,
 		impulse: 0,
-		duration: 0,
+		force: 0,
+		mArm: 0,
+		mBag: 0,
+		leverArm: 0,
+		leverBag: 0,
+		bagSpeed: 0,
+		bagAngular: 0,
+		energyBag: 0,
+		impulseCheck: 0,
+		checkPending: 0,
+		contactT: 0,
+		contactAt: null,
+		rawSpeed: 0,
+		strikeAfter: 0,
 		bodyTravel: 0,
-		inContact: false,
-		everContacted: false,
-		firstDone: false,
-		bagSpeedAtRelease: 0,
-		bagMaxSpeed: 0
+		everContacted: false
 	};
 	var push = {
 		active: false,
-		remaining: 0,
+		impulseLeft: 0,
 		torque: 0
 	};
 	var MESH_BODY = {
 		hand_front: "forearm_front",
 		hand_back: "forearm_back"
 	};
-	var CONTACT_WINDOW = .06;
-	var contactElapsed = 0;
 	function zoneMass(kind, mul) {
 		return ZONE[kind].frac * BODY_MASS * mul;
 	}
 	function zoneLen(kind, mul) {
 		return ZONE[kind].len * mul;
 	}
+	function armModel(p) {
+		const LU = zoneLen("upperArm", p.lenMul), LF = zoneLen("forearm", p.lenMul), LH = zoneLen("hand", p.lenMul);
+		const MU = zoneMass("upperArm", p.massMul), MF = zoneMass("forearm", p.massMul), MH = zoneMass("hand", p.massMul);
+		const dU = .436 * LU;
+		const dF = LU + .43 * LF;
+		const dH = LU + LF + .506 * LH;
+		const total = MU + MF + MH;
+		return {
+			LU,
+			LF,
+			LH,
+			MU,
+			MF,
+			MH,
+			dU,
+			dF,
+			dH,
+			total,
+			com: (MU * dU + MF * dF + MH * dH) / total,
+			inertia: MU * (dU * dU + Math.pow(.322 * LU, 2)) + MF * (dF * dF + Math.pow(.303 * LF, 2)) + MH * (dH * dH + Math.pow(.297 * LH, 2))
+		};
+	}
+	function bagInertia() {
+		return BAG.mass * (BAG.hx * BAG.hx + BAG.hy * BAG.hy) / 3 + BAG.mass * BAG.hy * BAG.hy;
+	}
+	function rotateByQuat(v, q) {
+		const tx = 2 * (q.y * v.z - q.z * v.y);
+		const ty = 2 * (q.z * v.x - q.x * v.z);
+		const tz = 2 * (q.x * v.y - q.y * v.x);
+		return {
+			x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+			y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+			z: v.z + q.w * tz + (q.x * ty - q.y * tx)
+		};
+	}
+	function pointVelocity(body, point) {
+		const v = body.linvel();
+		const w = body.angvel();
+		const c = body.worldCom();
+		const rx = point.x - c.x, ry = point.y - c.y, rz = point.z - c.z;
+		return {
+			x: v.x + (w.y * rz - w.z * ry),
+			y: v.y + (w.z * rx - w.x * rz),
+			z: v.z + (w.x * ry - w.y * rx)
+		};
+	}
+	function leverZ(from, to, n) {
+		const rx = to.x - from.x, ry = to.y - from.y;
+		return rx * n.y - ry * n.x;
+	}
 	function params() {
 		return {
 			massMul: parseFloat(ui.mass.value),
 			lenMul: parseFloat(ui.len.value),
 			torque: parseFloat(ui.torque.value),
-			stance: parseFloat(ui.stiffness.value)
+			stance: parseFloat(ui.stiffness.value),
+			restitution: parseFloat(ui.strikeRest.value),
+			contactMs: parseFloat(ui.strikeTime.value)
 		};
 	}
 	function addBox(body, hx, hy, hz, ox, oy, mass, opts) {
 		const o = opts || {};
-		const desc = Og.ColliderDesc.cuboid(hx, hy, hz).setMass(mass).setTranslation(ox || 0, oy || 0, 0).setFriction(o.friction !== void 0 ? o.friction : .7).setRestitution(o.restitution !== void 0 ? o.restitution : .05);
-		if (o.contactEvents) desc.setActiveEvents(Og.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(1);
+		const desc = Og.ColliderDesc.cuboid(hx, hy, hz).setMass(mass).setTranslation(ox || 0, oy || 0, 0).setFriction(o.friction !== void 0 ? o.friction : .7).setRestitution(o.restitution !== void 0 ? o.restitution : .05).setCollisionGroups(o.groups !== void 0 ? o.groups : GROUPS.world);
+		if (o.sensor) desc.setSensor(true);
+		if (o.collisionEvents) desc.setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS);
 		return world.createCollider(desc, body);
 	}
 	function makeMesh(w, h, d, ox, oy, material) {
@@ -35056,6 +35142,7 @@ void main() {
 		bodies = {};
 		joints = {};
 		lastHand = null;
+		lastHandVel = null;
 		const p = params();
 		const L = {
 			head: zoneLen("head", 1),
@@ -35084,10 +35171,11 @@ void main() {
 			y: -9.81,
 			z: 0
 		});
-		world.timestep = 1 / 240;
+		world.timestep = workTimestep;
+		world.numSolverIterations = SOLVER_ITERATIONS;
 		eventQueue = new Og.EventQueue(true);
 		const ground = world.createRigidBody(Og.RigidBodyDesc.fixed());
-		world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setFriction(1), ground);
+		world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setFriction(1).setCollisionGroups(GROUPS.world), ground);
 		const groundMesh = new Mesh(new BoxGeometry(16, .1, 1), matGround);
 		groundMesh.position.set(0, -.05, 0);
 		scene.add(groundMesh);
@@ -35137,10 +35225,19 @@ void main() {
 			addBox(fore, T * .75, L.forearm / 2, T * .75, 0, -L.forearm / 2, M.forearm);
 			const handOffset = -(L.forearm + L.hand / 2);
 			const handShape = addBox(fore, T * .7, L.hand / 2, T * .7, 0, handOffset, M.hand, {
-				contactEvents: true,
-				restitution: .15
+				restitution: .15,
+				sensor: side === "front",
+				collisionEvents: true,
+				groups: side === "front" ? GROUPS.hand : GROUPS.world
 			});
-			if (side === "front") handCollider = handShape;
+			if (side === "front") {
+				handCollider = handShape;
+				handHalf = {
+					x: T * .7,
+					y: L.hand / 2,
+					z: T * .7
+				};
+			}
 			meshes["forearm_" + side] = makeMesh(T * 1.5, L.forearm, T * 1.5, 0, -L.forearm / 2, matLimbs);
 			meshes["hand_" + side] = makeMesh(T * 1.4, L.hand, T * 1.4, 0, handOffset, matLimbs);
 			scene.add(meshes["forearm_" + side], meshes["hand_" + side]);
@@ -35237,10 +35334,11 @@ void main() {
 		}
 		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(BAG.x, BAG.topY, 0));
 		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(BAG.x, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
-		addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, BAG.mass, {
+		bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, BAG.mass, {
 			friction: .8,
 			restitution: .2,
-			contactEvents: true
+			collisionEvents: true,
+			groups: GROUPS.bag
 		});
 		const bagJoint = Og.JointData.revolute({
 			x: 0,
@@ -35268,77 +35366,83 @@ void main() {
 		exposeDiagnostics();
 	}
 	function resetMeasure() {
-		measure.tipSpeed = 0;
 		measure.maxSpeed = 0;
-		measure.peak = 0;
+		measure.handSpeed = 0;
+		measure.strikeApplied = false;
 		measure.impulse = 0;
-		measure.duration = 0;
+		measure.force = 0;
+		measure.mArm = 0;
+		measure.mBag = 0;
+		measure.leverArm = 0;
+		measure.leverBag = 0;
+		measure.bagSpeed = 0;
+		measure.bagAngular = 0;
+		measure.energyBag = 0;
+		measure.impulseCheck = 0;
+		measure.checkPending = 0;
+		measure.contactT = 0;
+		measure.contactAt = null;
+		measure.rawSpeed = 0;
+		measure.strikeAfter = 0;
 		measure.bodyTravel = 0;
-		measure.inContact = false;
 		measure.everContacted = false;
-		measure.firstDone = false;
-		measure.bagSpeedAtRelease = 0;
-		measure.bagMaxSpeed = 0;
-		contactElapsed = 0;
 		for (const el of [
 			ui.rSpeed,
-			ui.rPeak,
-			ui.rImpulse,
-			ui.rImpulseForce,
-			ui.rEnergy,
-			ui.rDur,
 			ui.rEffMass,
-			ui.rBody
+			ui.rBagMass,
+			ui.rImpulse,
+			ui.rForce,
+			ui.rImpulseCheck,
+			ui.rBagSpeed,
+			ui.rEnergy,
+			ui.rDur
 		]) el.textContent = "—";
 	}
 	function updateDerived() {
 		const p = params();
-		const LU = zoneLen("upperArm", p.lenMul), LF = zoneLen("forearm", p.lenMul), LH = zoneLen("hand", p.lenMul);
-		const MU = zoneMass("upperArm", p.massMul), MF = zoneMass("forearm", p.massMul), MH = zoneMass("hand", p.massMul);
-		const dU = .436 * LU;
-		const dF = LU + .43 * LF;
-		const dH = LU + LF + .506 * LH;
-		const total = MU + MF + MH;
-		const com = (MU * dU + MF * dF + MH * dH) / total;
-		const inertia = MU * (dU * dU + Math.pow(.322 * LU, 2)) + MF * (dF * dF + Math.pow(.303 * LF, 2)) + MH * (dH * dH + Math.pow(.297 * LH, 2));
-		ui.dMass.textContent = total.toFixed(2) + " кг";
-		ui.dReach.textContent = (LU + LF + LH).toFixed(2) + " м";
-		ui.dInertia.textContent = inertia.toFixed(3) + " кг·м²";
-		ui.dCom.textContent = com.toFixed(2) + " м";
-		ui.dCost.textContent = (p.torque / inertia).toFixed(1) + " рад/с²";
+		const m = armModel(p);
+		ui.dMass.textContent = m.total.toFixed(2) + " кг";
+		ui.dReach.textContent = (m.LU + m.LF + m.LH).toFixed(2) + " м";
+		ui.dInertia.textContent = m.inertia.toFixed(3) + " кг·м²";
+		ui.dCom.textContent = m.com.toFixed(2) + " м";
+		ui.dCost.textContent = (p.torque / m.inertia).toFixed(1) + " рад/с²";
 		const fore = bodies["forearm_front"];
 		const upper = bodies["upperArm_front"];
 		if (fore && upper) {
 			const engineMass = fore.mass() + upper.mass();
-			const diff = Math.abs(engineMass - total);
-			ui.dMass.textContent = total.toFixed(2) + " кг" + (diff < .05 ? " ✓ движок" : " (движок: " + engineMass.toFixed(2) + ")");
+			const diff = Math.abs(engineMass - m.total);
+			ui.dMass.textContent = m.total.toFixed(2) + " кг" + (diff < .05 ? " ✓ движок" : " (движок: " + engineMass.toFixed(2) + ")");
 		}
 	}
 	function exposeDiagnostics() {
 		function snapshot() {
-			const bagMass = BAG.mass;
-			const impulseBag = bagMass * measure.bagSpeedAtRelease;
-			const energyBag = .5 * bagMass * Math.pow(measure.bagSpeedAtRelease, 2);
 			return {
-				tipSpeed: measure.tipSpeed,
 				maxSpeed: measure.maxSpeed,
-				peak: measure.peak,
+				handSpeed: measure.handSpeed,
+				mArm: measure.mArm,
+				mBag: measure.mBag,
+				leverArm: measure.leverArm,
+				leverBag: measure.leverBag,
 				impulse: measure.impulse,
-				impulseBag,
-				impulseForce: measure.impulse,
-				energyBag,
-				bagSpeed: measure.bagSpeedAtRelease,
-				effectiveMass: measure.tipSpeed > .01 ? impulseBag / measure.tipSpeed : 0,
-				duration: measure.duration,
+				impulseCheck: measure.impulseCheck,
+				force: measure.force,
+				bagSpeed: measure.bagSpeed,
+				bagAngular: measure.bagAngular,
+				energyBag: measure.energyBag,
+				duration: params().contactMs / 1e3,
+				strikeAfter: measure.strikeAfter,
+				contactY: measure.contactAt ? measure.contactAt.y : 0,
 				bodyTravel: measure.bodyTravel,
-				contacted: measure.everContacted
+				contacted: measure.everContacted,
+				struck: measure.strikeApplied
 			};
 		}
 		function runPunchSync(seconds) {
+			build();
+			settle(SETTLE_SECONDS);
+			freeze();
 			resetMeasure();
-			push.active = true;
-			push.remaining = .12;
-			push.torque = params().torque;
+			startPush();
 			const dt = world.timestep;
 			const steps = Math.max(1, Math.round((seconds || 1.5) / dt));
 			for (let i = 0; i < steps; i++) stepPhysics();
@@ -35348,7 +35452,7 @@ void main() {
 			const out = {};
 			const dt = world.timestep;
 			const rest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(3, .3, 0));
-			world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1), rest);
+			world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1).setCollisionGroups(GROUPS.world), rest);
 			const settleSteps = Math.round(1.5 / dt);
 			const totalSteps = Math.round(3 / dt);
 			let maxSpeedAfterSettle = 0;
@@ -35364,7 +35468,7 @@ void main() {
 			world.removeRigidBody(rest);
 			const makeProbe = (x, vx) => {
 				const b = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, 2, 0).setGravityScale(0).setLinvel(vx, 0, 0));
-				world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1).setRestitution(1).setFriction(0), b);
+				world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1).setRestitution(1).setFriction(0).setCollisionGroups(GROUPS.world), b);
 				return b;
 			};
 			const a = makeProbe(2.5, 1.5);
@@ -35384,8 +35488,17 @@ void main() {
 			snapshot,
 			runPunch: runPunchSync,
 			probe: physicsProbe,
+			step: (seconds) => {
+				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
+				for (let i = 0; i < n; i++) stepPhysics();
+				return snapshot();
+			},
 			setTimestep: (dt) => {
+				workTimestep = dt;
 				world.timestep = dt;
+			},
+			setIterations: (n) => {
+				world.numSolverIterations = n;
 			},
 			rebuild: build,
 			read: () => {
@@ -35414,77 +35527,258 @@ void main() {
 		};
 	}
 	function punch() {
+		build();
+		settle(SETTLE_SECONDS);
+		freeze();
 		resetMeasure();
+		startPush();
+	}
+	function startPush() {
 		push.active = true;
-		push.remaining = .12;
+		push.impulseLeft = params().torque * .12;
 		push.torque = params().torque;
+		sincePunch = 0;
+	}
+	function settle(seconds) {
+		const steps = Math.max(0, Math.round(seconds / world.timestep));
+		const wasActive = push.active;
+		push.active = false;
+		for (let i = 0; i < steps; i++) stepPhysics();
+		push.active = wasActive;
+	}
+	function freeze() {
+		for (const b of Object.values(bodies)) {
+			if (!b || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
+			b.setLinvel({
+				x: 0,
+				y: 0,
+				z: 0
+			}, false);
+			b.setAngvel({
+				x: 0,
+				y: 0,
+				z: 0
+			}, false);
+		}
+	}
+	function shoulderPoint() {
+		const chest = bodies.chest;
+		if (!chest) return {
+			x: ARM_FRONT_X,
+			y: Y.shoulder,
+			z: ARM_Z
+		};
+		const t = chest.translation();
+		const r = rotateByQuat({
+			x: ARM_FRONT_X,
+			y: Y.shoulder - Y.waist,
+			z: ARM_Z
+		}, chest.rotation());
+		return {
+			x: t.x + r.x,
+			y: t.y + r.y,
+			z: t.z + r.z
+		};
+	}
+	function contactPoint(prev, cur) {
+		if (!bagCollider || !prev) return {
+			point: cur,
+			t: 1
+		};
+		const pad = handHalf || {
+			x: 0,
+			y: 0,
+			z: 0
+		};
+		const hx = BAG.hx + pad.x, hy = BAG.hy + pad.y, hz = BAG.hz + pad.z;
+		const c = bagCollider.translation();
+		const q = bagCollider.rotation();
+		const conj = {
+			x: -q.x,
+			y: -q.y,
+			z: -q.z,
+			w: q.w
+		};
+		const a = rotateByQuat({
+			x: prev.x - c.x,
+			y: prev.y - c.y,
+			z: prev.z - c.z
+		}, conj);
+		const b = rotateByQuat({
+			x: cur.x - c.x,
+			y: cur.y - c.y,
+			z: cur.z - c.z
+		}, conj);
+		const d = {
+			x: b.x - a.x,
+			y: b.y - a.y,
+			z: b.z - a.z
+		};
+		let tMin = 0, tMax = 1;
+		for (const [o, dd, h] of [
+			[
+				a.x,
+				d.x,
+				hx
+			],
+			[
+				a.y,
+				d.y,
+				hy
+			],
+			[
+				a.z,
+				d.z,
+				hz
+			]
+		]) {
+			if (Math.abs(dd) < 1e-9) {
+				if (Math.abs(o) > h) return {
+					point: cur,
+					t: 1
+				};
+				continue;
+			}
+			let t1 = (-h - o) / dd, t2 = (h - o) / dd;
+			if (t1 > t2) {
+				const tmp = t1;
+				t1 = t2;
+				t2 = tmp;
+			}
+			if (t1 > tMin) tMin = t1;
+			if (t2 < tMax) tMax = t2;
+			if (tMin > tMax) return {
+				point: cur,
+				t: 1
+			};
+		}
+		const back = rotateByQuat({
+			x: a.x + d.x * tMin,
+			y: a.y + d.y * tMin,
+			z: a.z + d.z * tMin
+		}, q);
+		return {
+			point: {
+				x: c.x + back.x,
+				y: c.y + back.y,
+				z: c.z + back.z
+			},
+			t: tMin
+		};
+	}
+	function strike(point, v) {
+		const fore = bodies["forearm_front"];
+		const p = params();
+		if (!fore || !bagBodyRef) return;
+		const speed = Math.hypot(v.x, v.y, v.z);
+		if (speed < .05) return;
+		const n = {
+			x: v.x / speed,
+			y: v.y / speed,
+			z: v.z / speed
+		};
+		const arm = armModel(p);
+		const shoulder = shoulderPoint();
+		const leverArm = Math.abs(leverZ(shoulder, point, n));
+		const mArm = leverArm > 1e-4 ? arm.inertia / (leverArm * leverArm) : Infinity;
+		const pivot = {
+			x: BAG.x,
+			y: BAG.topY,
+			z: 0
+		};
+		const leverBag = Math.abs(leverZ(pivot, point, n));
+		const bagI = bagInertia();
+		const mBag = leverBag > 1e-4 ? bagI / (leverBag * leverBag) : Infinity;
+		const J = (1 + p.restitution) * (mArm * mBag) / (mArm + mBag) * speed;
+		bagBodyRef.applyImpulseAtPoint({
+			x: n.x * J,
+			y: n.y * J,
+			z: n.z * J
+		}, point, true);
+		fore.applyImpulseAtPoint({
+			x: -n.x * J,
+			y: -n.y * J,
+			z: -n.z * J
+		}, point, true);
+		measure.strikeApplied = true;
+		measure.handSpeed = speed;
+		measure.impulse = J;
+		measure.force = J / (p.contactMs / 1e3);
+		measure.mArm = mArm;
+		measure.mBag = mBag;
+		measure.leverArm = leverArm;
+		measure.leverBag = leverBag;
+		measure.checkPending = 1;
+		flashUntil = performance.now() + 400;
 	}
 	function stepPhysics() {
 		const dt = world.timestep;
+		sincePunch += dt;
 		if (push.active) {
 			const arm = bodies["upperArm_front"];
+			const step = Math.min(push.torque * dt, push.impulseLeft);
 			if (arm) arm.applyTorqueImpulse({
 				x: 0,
 				y: 0,
-				z: push.torque * dt
+				z: step
 			}, true);
 			if (bodies.chest) bodies.chest.applyTorqueImpulse({
 				x: 0,
 				y: 0,
-				z: push.torque * .35 * dt
+				z: step * .35
 			}, true);
-			push.remaining -= dt;
-			if (push.remaining <= 0) push.active = false;
+			push.impulseLeft -= step;
+			if (push.impulseLeft <= 0) push.active = false;
 		}
+		const prevHand = lastHand;
+		const prevVel = lastHandVel;
 		world.step(eventQueue);
-		let contactThisStep = false;
-		let forceThisStep = 0;
-		eventQueue.drainContactForceEvents((event) => {
-			let force = 0;
-			try {
-				force = event.totalForceMagnitude();
-			} catch (e) {
-				force = 0;
-			}
-			if (force <= 0) return;
-			forceThisStep += force;
-			contactThisStep = true;
-			measure.everContacted = true;
-			if (measure.firstDone) return;
-			contactElapsed += dt;
-			if (contactElapsed > CONTACT_WINDOW) {
-				measure.firstDone = true;
-				return;
-			}
-			measure.impulse += force * dt;
-			measure.duration += dt;
-			if (force > measure.peak) measure.peak = force;
-			flashUntil = performance.now() + 400;
-		});
-		if (contactThisStep) measure.inContact = true;
-		else if (measure.inContact) {
-			measure.inContact = false;
-			measure.firstDone = true;
-		}
-		if (!measure.firstDone && measure.peak > 0 && forceThisStep < measure.peak * .1) measure.firstDone = true;
-		if (bagBodyRef) {
+		if (measure.checkPending && bagBodyRef) {
+			const w = bagBodyRef.angvel();
 			const bv = bagBodyRef.linvel();
-			const bspeed = Math.hypot(bv.x, bv.y, bv.z);
-			if (bspeed > measure.bagMaxSpeed) measure.bagMaxSpeed = bspeed;
-			if (measure.firstDone && measure.bagSpeedAtRelease === 0) measure.bagSpeedAtRelease = bspeed;
+			const bagI = bagInertia();
+			measure.bagAngular = w.z;
+			measure.bagSpeed = Math.hypot(bv.x, bv.y, bv.z);
+			measure.energyBag = .5 * bagI * w.z * w.z;
+			measure.impulseCheck = Math.abs(w.z) * bagI / Math.max(measure.leverBag, 1e-4);
+			measure.checkPending = 0;
 		}
+		eventQueue.drainCollisionEvents((h1, h2, started) => {
+			if (!started || !handCollider || !bagCollider) return;
+			const a = handCollider.handle, b = bagCollider.handle;
+			if (!(h1 === a && h2 === b || h1 === b && h2 === a)) return;
+			measure.everContacted = true;
+			if (measure.strikeApplied) return;
+			const cur = handCollider.translation();
+			const hit = contactPoint(prevHand, cur);
+			const curVel = pointVelocity(bodies["forearm_front"], cur);
+			const v = prevVel && hit.t < 1 ? {
+				x: prevVel.x + (curVel.x - prevVel.x) * hit.t,
+				y: prevVel.y + (curVel.y - prevVel.y) * hit.t,
+				z: prevVel.z + (curVel.z - prevVel.z) * hit.t
+			} : curVel;
+			measure.contactT = hit.t;
+			measure.contactAt = {
+				x: cur.x,
+				y: cur.y,
+				z: cur.z
+			};
+			measure.strikeAfter = sincePunch;
+			measure.rawSpeed = prevHand ? Math.hypot(cur.x - prevHand.x, cur.y - prevHand.y, cur.z - prevHand.z) / dt : 0;
+			strike(hit.point, v);
+		});
 		if (handCollider) {
 			const t = handCollider.translation();
-			if (lastHand) {
-				const speed = Math.hypot(t.x - lastHand.x, t.y - lastHand.y, t.z - lastHand.z) / dt;
+			if (prevHand) {
+				const speed = Math.hypot(t.x - prevHand.x, t.y - prevHand.y, t.z - prevHand.z) / dt;
 				if (speed > measure.maxSpeed) measure.maxSpeed = speed;
-				if (!measure.everContacted && speed > 0) measure.tipSpeed = speed;
 			}
 			lastHand = {
 				x: t.x,
 				y: t.y,
 				z: t.z
 			};
+			lastHandVel = pointVelocity(bodies["forearm_front"], t);
 		}
 		if (bodies.abdomen) {
 			const travel = Math.abs(bodies.abdomen.translation().x - bodyStartX);
@@ -35492,19 +35786,16 @@ void main() {
 		}
 	}
 	function report() {
-		if (measure.maxSpeed > 0) ui.rSpeed.textContent = measure.maxSpeed.toFixed(2) + " м/с";
-		if (measure.bodyTravel > 0) ui.rBody.textContent = (measure.bodyTravel * 100).toFixed(1) + " см";
-		if (!measure.everContacted) return;
-		ui.rPeak.textContent = Math.round(measure.peak) + " Н";
-		const impulseBag = BAG.mass * measure.bagSpeedAtRelease;
-		const energyBag = .5 * BAG.mass * Math.pow(measure.bagSpeedAtRelease, 2);
-		ui.rImpulse.textContent = impulseBag.toFixed(2) + " Н·с";
-		ui.rImpulseForce.textContent = measure.impulse.toFixed(2) + " Н·с";
-		ui.rEnergy.textContent = energyBag.toFixed(2) + " Дж";
-		ui.rDur.textContent = Math.round(measure.duration * 1e3) + " мс";
-		const ref = measure.tipSpeed > .01 ? measure.tipSpeed : measure.maxSpeed;
-		const eff = ref > .01 ? impulseBag / ref : 0;
-		ui.rEffMass.textContent = eff.toFixed(2) + " кг";
+		if (!measure.strikeApplied) return;
+		ui.rSpeed.textContent = measure.handSpeed.toFixed(2) + " м/с";
+		ui.rEffMass.textContent = measure.mArm.toFixed(2) + " кг";
+		ui.rBagMass.textContent = measure.mBag.toFixed(2) + " кг";
+		ui.rImpulse.textContent = measure.impulse.toFixed(2) + " Н·с";
+		ui.rForce.textContent = Math.round(measure.force) + " Н";
+		ui.rImpulseCheck.textContent = measure.impulseCheck.toFixed(2) + " Н·с";
+		ui.rBagSpeed.textContent = measure.bagSpeed.toFixed(2) + " м/с";
+		ui.rEnergy.textContent = measure.energyBag.toFixed(2) + " Дж";
+		ui.rDur.textContent = Math.round(params().contactMs) + " мс";
 	}
 	function sync() {
 		for (const key of Object.keys(meshes)) {
@@ -35527,6 +35818,10 @@ void main() {
 		}
 		renderer.render(scene, camera);
 	}
+	ui.strikeRest.value = STRIKE.restitution;
+	ui.strikeTime.value = STRIKE.contactMs;
+	ui.vStrikeRest.textContent = STRIKE.restitution.toFixed(2);
+	ui.vStrikeTime.textContent = String(STRIKE.contactMs);
 	ui.mass.addEventListener("input", () => {
 		ui.vMass.textContent = "×" + (+ui.mass.value).toFixed(2);
 		build();
@@ -35542,6 +35837,13 @@ void main() {
 	ui.stiffness.addEventListener("input", () => {
 		ui.vStiff.textContent = "×" + (+ui.stiffness.value).toFixed(2);
 		build();
+	});
+	ui.strikeRest.addEventListener("input", () => {
+		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
+	});
+	ui.strikeTime.addEventListener("input", () => {
+		ui.vStrikeTime.textContent = ui.strikeTime.value;
+		report();
 	});
 	ui.punch.addEventListener("click", punch);
 	ui.reset.addEventListener("click", build);
