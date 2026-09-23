@@ -71,6 +71,8 @@
   <input type="range" id="torque" min="10" max="120" step="5" value="60" />
   <label>Жёсткость стойки <span class="val" id="v-stiff">×1.00</span></label>
   <input type="range" id="stiffness" min="0.2" max="2" step="0.1" value="1" />
+  <label>Сгиб коленей, см <span class="val" id="v-bend">0</span></label>
+  <input type="range" id="bend" min="0" max="12" step="1" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
   <input type="range" id="strike-rest" min="0.05" max="0.6" step="0.05" value="0.25" />
   <label>Время контакта, мс <span class="val" id="v-strike-time">8</span></label>
@@ -34950,6 +34952,12 @@ void main() {
 		full: .12,
 		riseMs: 20
 	};
+	var driveShare = {
+		arm: 1,
+		chest: .35,
+		hip: 0,
+		ankle: 0
+	};
 	var SETTLE_SECONDS = .6;
 	var SOLVER_ITERATIONS = 16;
 	var GROUPS = {
@@ -34962,6 +34970,7 @@ void main() {
 		len: document.getElementById("len"),
 		torque: document.getElementById("torque"),
 		stiffness: document.getElementById("stiffness"),
+		bend: document.getElementById("bend"),
 		strikeRest: document.getElementById("strike-rest"),
 		strikeTime: document.getElementById("strike-time"),
 		rise: document.getElementById("rise"),
@@ -34969,6 +34978,7 @@ void main() {
 		vLen: document.getElementById("v-len"),
 		vTorque: document.getElementById("v-torque"),
 		vStiff: document.getElementById("v-stiff"),
+		vBend: document.getElementById("v-bend"),
 		vStrikeRest: document.getElementById("v-strike-rest"),
 		vStrikeTime: document.getElementById("v-strike-time"),
 		vRise: document.getElementById("v-rise"),
@@ -35068,6 +35078,8 @@ void main() {
 		rawSpeed: 0,
 		strikeAfter: 0,
 		driveImpulse: 0,
+		driveTotal: 0,
+		comShift: 0,
 		bodyTravel: 0,
 		everContacted: false
 	};
@@ -35079,6 +35091,9 @@ void main() {
 		total: 0
 	};
 	var driveImpulse = 0;
+	var driveTotal = 0;
+	var comStart = 0;
+	var jointContactsOn = true;
 	var MESH_BODY = {
 		hand_front: "forearm_front",
 		hand_back: "forearm_back"
@@ -35147,7 +35162,8 @@ void main() {
 			stance: parseFloat(ui.stiffness.value),
 			restitution: parseFloat(ui.strikeRest.value),
 			contactMs: parseFloat(ui.strikeTime.value),
-			rise: parseFloat(ui.rise.value) / 1e3
+			rise: parseFloat(ui.rise.value) / 1e3,
+			bend: parseFloat(ui.bend.value) / 100
 		};
 	}
 	function addBox(body, hx, hy, hz, ox, oy, mass, opts) {
@@ -35210,17 +35226,29 @@ void main() {
 		scene.add(groundMesh);
 		meshes.ground = groundMesh;
 		const T = .1;
+		const bend = Math.max(0, Math.min(p.bend, .9 * Math.min(L.thigh, L.shin)));
+		const aThigh = Math.asin(Math.min(.99, bend / L.thigh));
+		const aShin = -Math.asin(Math.min(.99, bend / L.shin));
+		const kneeY = Y.ankle + L.shin * Math.cos(aShin);
+		const hipY = kneeY + L.thigh * Math.cos(aThigh);
+		const dy = hipY - Y.hip;
+		const quatZ = (a) => ({
+			x: 0,
+			y: 0,
+			z: Math.sin(a / 2),
+			w: Math.cos(a / 2)
+		});
 		for (const side of ["back", "front"]) {
 			const x = side === "back" ? LEG_BACK_X : LEG_FRONT_X;
 			const foot = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(x, Y.ankle, 0));
 			addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot);
 			meshes["foot_" + side] = makeMesh(L.foot, .09, T * 2, L.foot / 2 - .06, -.035, matLimbs);
 			scene.add(meshes["foot_" + side]);
-			const shin = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, Y.knee, 0).setLinearDamping(.2).setAngularDamping(.2));
+			const shin = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, kneeY, 0).setRotation(quatZ(aShin)).setLinearDamping(.2).setAngularDamping(.2));
 			addBox(shin, T, L.shin / 2, T, 0, -L.shin / 2, M.shin);
 			meshes["shin_" + side] = makeMesh(T * 2, L.shin, T * 2, 0, -L.shin / 2, matLimbs);
 			scene.add(meshes["shin_" + side]);
-			const thigh = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, Y.hip, 0).setLinearDamping(.2).setAngularDamping(.2));
+			const thigh = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, hipY, 0).setRotation(quatZ(aThigh)).setLinearDamping(.2).setAngularDamping(.2));
 			addBox(thigh, T * 1.15, L.thigh / 2, T * 1.15, 0, -L.thigh / 2, M.thigh);
 			meshes["thigh_" + side] = makeMesh(T * 2.3, L.thigh, T * 2.3, 0, -L.thigh / 2, matLimbs);
 			scene.add(meshes["thigh_" + side]);
@@ -35228,17 +35256,17 @@ void main() {
 			bodies["shin_" + side] = shin;
 			bodies["thigh_" + side] = thigh;
 		}
-		const abdomen = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.hip, 0).setLinearDamping(.2).setAngularDamping(.2));
+		const abdomen = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.hip + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
 		addBox(abdomen, T * 1.5, L.abdomen / 2, T * 1.5, 0, L.abdomen / 2, M.abdomen);
 		meshes.abdomen = makeMesh(T * 3, L.abdomen, T * 3, 0, L.abdomen / 2, matBody);
 		scene.add(meshes.abdomen);
 		bodies.abdomen = abdomen;
-		const chest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.waist, 0).setLinearDamping(.2).setAngularDamping(.2));
+		const chest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.waist + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
 		addBox(chest, T * 1.7, L.chest / 2, T * 1.7, 0, L.chest / 2, M.chest);
 		meshes.chest = makeMesh(T * 3.4, L.chest, T * 3.4, 0, L.chest / 2, matBody);
 		scene.add(meshes.chest);
 		bodies.chest = chest;
-		const head = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.chestTop, 0).setLinearDamping(.2).setAngularDamping(.2));
+		const head = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.chestTop + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
 		addBox(head, .11, L.head / 2, T * 1.1, 0, L.head / 2, M.head);
 		meshes.head = makeMesh(.22, L.head, T * 2.2, 0, L.head / 2, matBody);
 		scene.add(meshes.head);
@@ -35246,11 +35274,11 @@ void main() {
 		for (const side of ["back", "front"]) {
 			const ax = side === "back" ? ARM_BACK_X : ARM_FRONT_X;
 			const armZ = side === "front" ? ARM_Z : -.28;
-			const upper = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder, armZ).setLinearDamping(.1).setAngularDamping(.1));
+			const upper = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder + dy, armZ).setLinearDamping(.1).setAngularDamping(.1));
 			addBox(upper, T * .85, L.upperArm / 2, T * .85, 0, -L.upperArm / 2, M.upperArm);
 			meshes["upperArm_" + side] = makeMesh(T * 1.7, L.upperArm, T * 1.7, 0, -L.upperArm / 2, matLimbs);
 			scene.add(meshes["upperArm_" + side]);
-			const fore = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder - L.upperArm, armZ).setLinearDamping(.1).setAngularDamping(.1));
+			const fore = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder - L.upperArm + dy, armZ).setLinearDamping(.1).setAngularDamping(.1));
 			addBox(fore, T * .75, L.forearm / 2, T * .75, 0, -L.forearm / 2, M.forearm);
 			const handOffset = -(L.forearm + L.hand / 2);
 			const handShape = addBox(fore, T * .7, L.hand / 2, T * .7, 0, handOffset, M.hand, {
@@ -35275,14 +35303,15 @@ void main() {
 		}
 		const stiff = 900 * p.stance;
 		const damp = 60 * p.stance;
-		function hinge(b1, a1, b2, a2, stiffness, damping) {
+		function hinge(b1, a1, b2, a2, stiffness, damping, target) {
 			const j = world.createImpulseJoint(Og.JointData.revolute(a1, a2, {
 				x: 0,
 				y: 0,
 				z: 1
 			}), b1, b2, true);
+			j.setContactsEnabled(jointContactsOn);
 			if (stiffness > 0) try {
-				j.configureMotorPosition(0, stiffness, damping);
+				j.configureMotorPosition(target || 0, stiffness, damping);
 			} catch (e) {}
 			return j;
 		}
@@ -35299,7 +35328,7 @@ void main() {
 				x: 0,
 				y: -L.shin,
 				z: 0
-			}, stiff, damp);
+			}, stiff, damp, -aShin);
 			joints["knee_" + side] = hinge(shin, {
 				x: 0,
 				y: 0,
@@ -35308,7 +35337,7 @@ void main() {
 				x: 0,
 				y: -L.thigh,
 				z: 0
-			}, stiff, damp);
+			}, stiff, damp, -(aThigh - aShin));
 			joints["hip_" + side] = hinge(thigh, {
 				x: 0,
 				y: 0,
@@ -35317,7 +35346,7 @@ void main() {
 				x,
 				y: 0,
 				z: 0
-			}, stiff * 1.4, damp * 1.4);
+			}, stiff * 1.4, damp * 1.4, aThigh);
 		}
 		joints.spine = hinge(abdomen, {
 			x: 0,
@@ -35415,6 +35444,8 @@ void main() {
 		measure.rawSpeed = 0;
 		measure.strikeAfter = 0;
 		measure.driveImpulse = 0;
+		measure.driveTotal = 0;
+		measure.comShift = 0;
 		measure.bodyTravel = 0;
 		measure.everContacted = false;
 		for (const el of [
@@ -35467,6 +35498,8 @@ void main() {
 				duration: params().contactMs / 1e3,
 				strikeAfter: measure.strikeAfter,
 				driveImpulse: measure.driveImpulse,
+				driveTotal: measure.driveTotal,
+				comShift: measure.comShift,
 				contactY: measure.contactAt ? measure.contactAt.y : 0,
 				bodyTravel: measure.bodyTravel,
 				contacted: measure.everContacted,
@@ -35536,6 +35569,35 @@ void main() {
 			setIterations: (n) => {
 				world.numSolverIterations = n;
 			},
+			setJointContacts: (on) => {
+				jointContactsOn = !!on;
+				for (const j of Object.values(joints)) j.setContactsEnabled(jointContactsOn);
+				return jointContactsOn;
+			},
+			setMotor: (name, target, stiffness, damping) => {
+				const j = joints[name];
+				if (!j) return "нет сустава " + name;
+				j.configureMotorPosition(target, stiffness || 900, damping || 60);
+				return "ok";
+			},
+			readMotor: (name) => {
+				const b = bodies[name];
+				if (!b) return null;
+				const t = b.translation();
+				return {
+					x: +t.x.toFixed(4),
+					y: +t.y.toFixed(4)
+				};
+			},
+			setDrive: (share) => {
+				driveShare = {
+					arm: 1,
+					chest: .35,
+					hip: 0,
+					...share
+				};
+			},
+			readDrive: () => ({ ...driveShare }),
 			rebuild: build,
 			read: () => {
 				const p = (b) => {
@@ -35578,6 +35640,19 @@ void main() {
 		push.elapsed = 0;
 		sincePunch = 0;
 		driveImpulse = 0;
+		driveTotal = 0;
+		comStart = bodyComX();
+	}
+	function bodyComX() {
+		let m = 0, mx = 0;
+		for (const b of Object.values(bodies)) {
+			if (!b || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
+			const c = b.worldCom();
+			const mass = b.mass();
+			m += mass;
+			mx += mass * c.x;
+		}
+		return m > 0 ? mx / m : 0;
 	}
 	function settle(seconds) {
 		const steps = Math.max(0, Math.round(seconds / world.timestep));
@@ -35746,6 +35821,7 @@ void main() {
 		measure.force = J / (p.contactMs / 1e3);
 		measure.peak = measure.force * Math.PI / 2;
 		measure.driveImpulse = driveImpulse;
+		measure.driveTotal = driveTotal;
 		measure.mArm = mArm;
 		measure.mBag = mBag;
 		measure.leverArm = leverArm;
@@ -35763,14 +35839,31 @@ void main() {
 			if (arm) arm.applyTorqueImpulse({
 				x: 0,
 				y: 0,
-				z: step
+				z: step * driveShare.arm
 			}, true);
 			if (bodies.chest) bodies.chest.applyTorqueImpulse({
 				x: 0,
 				y: 0,
-				z: step * .35
+				z: step * driveShare.chest
 			}, true);
+			if (driveShare.hip) for (const side of ["front", "back"]) {
+				const thigh = bodies["thigh_" + side];
+				if (thigh) thigh.applyTorqueImpulse({
+					x: 0,
+					y: 0,
+					z: step * driveShare.hip
+				}, true);
+			}
+			if (driveShare.ankle) for (const side of ["front", "back"]) {
+				const shin = bodies["shin_" + side];
+				if (shin) shin.applyTorqueImpulse({
+					x: 0,
+					y: 0,
+					z: step * driveShare.ankle
+				}, true);
+			}
 			driveImpulse += step;
+			driveTotal += step * (driveShare.arm + Math.abs(driveShare.chest) + 2 * Math.abs(driveShare.hip) + 2 * Math.abs(driveShare.ankle));
 			push.elapsed += dt;
 			if (push.elapsed >= push.total) push.active = false;
 		}
@@ -35828,6 +35921,8 @@ void main() {
 			const travel = Math.abs(bodies.abdomen.translation().x - bodyStartX);
 			if (travel > measure.bodyTravel) measure.bodyTravel = travel;
 		}
+		const comShift = Math.abs(bodyComX() - comStart);
+		if (comShift > measure.comShift) measure.comShift = comShift;
 	}
 	function report() {
 		if (!measure.strikeApplied) return;
@@ -35884,6 +35979,10 @@ void main() {
 	});
 	ui.stiffness.addEventListener("input", () => {
 		ui.vStiff.textContent = "×" + (+ui.stiffness.value).toFixed(2);
+		build();
+	});
+	ui.bend.addEventListener("input", () => {
+		ui.vBend.textContent = ui.bend.value;
 		build();
 	});
 	ui.strikeRest.addEventListener("input", () => {
