@@ -69,7 +69,9 @@
   <h2>Замеры</h2>
   <div class="row"><span class="dim">Скорость кисти</span><b id="r-speed">—</b></div>
   <div class="row"><span class="dim">Пиковая сила</span><b id="r-peak">—</b></div>
-  <div class="row"><span class="dim">Импульс</span><b id="r-impulse">—</b></div>
+  <div class="row"><span class="dim">Импульс (по груше)</span><b id="r-impulse">—</b></div>
+  <div class="row"><span class="dim">Импульс (по контакту)</span><b id="r-impulse-force">—</b></div>
+  <div class="row"><span class="dim">Энергия в груше</span><b id="r-energy">—</b></div>
   <div class="row"><span class="dim">Длительность контакта</span><b id="r-dur">—</b></div>
   <div class="row"><span class="dim">Эффективная масса</span><b id="r-effmass">—</b></div>
   <div class="row"><span class="dim">Ход корпуса</span><b id="r-body">—</b></div>
@@ -34912,12 +34914,13 @@ void main() {
 	var ARM_BACK_X = -.13;
 	var ARM_FRONT_X = .13;
 	var ARM_Z = .28;
-	var PAD = {
-		x: .64,
-		y: .68,
-		hx: .16,
-		hy: .3,
-		hz: .36
+	var BAG = {
+		x: .62,
+		topY: 1.05,
+		hx: .15,
+		hy: .35,
+		hz: .36,
+		mass: 20
 	};
 	var ui = {
 		mass: document.getElementById("mass"),
@@ -34933,6 +34936,8 @@ void main() {
 		rSpeed: document.getElementById("r-speed"),
 		rPeak: document.getElementById("r-peak"),
 		rImpulse: document.getElementById("r-impulse"),
+		rImpulseForce: document.getElementById("r-impulse-force"),
+		rEnergy: document.getElementById("r-energy"),
 		rDur: document.getElementById("r-dur"),
 		rEffMass: document.getElementById("r-effmass"),
 		rBody: document.getElementById("r-body"),
@@ -34987,7 +34992,8 @@ void main() {
 	var bodies = {};
 	var joints = {};
 	var meshes = {};
-	var padMaterial = null;
+	var bagMaterial = null;
+	var bagBodyRef = null;
 	var flashUntil = 0;
 	var lastHand = null;
 	var handCollider = null;
@@ -35001,7 +35007,9 @@ void main() {
 		bodyTravel: 0,
 		inContact: false,
 		everContacted: false,
-		firstDone: false
+		firstDone: false,
+		bagSpeedAtRelease: 0,
+		bagMaxSpeed: 0
 	};
 	var push = {
 		active: false,
@@ -35227,12 +35235,33 @@ void main() {
 				z: 0
 			}, elbowStiff, damp * .4);
 		}
-		const pad = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(PAD.x, PAD.y, 0));
-		world.createCollider(Og.ColliderDesc.cuboid(PAD.hx, PAD.hy, PAD.hz).setFriction(.8).setRestitution(.2), pad);
-		padMaterial = matPad.clone();
-		meshes.pad = new Mesh(new BoxGeometry(PAD.hx * 2, PAD.hy * 2, PAD.hz * 2), padMaterial);
-		meshes.pad.position.set(PAD.x, PAD.y, 0);
-		scene.add(meshes.pad);
+		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(BAG.x, BAG.topY, 0));
+		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(BAG.x, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
+		addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, BAG.mass, {
+			friction: .8,
+			restitution: .2,
+			contactEvents: true
+		});
+		const bagJoint = Og.JointData.revolute({
+			x: 0,
+			y: 0,
+			z: 0
+		}, {
+			x: 0,
+			y: BAG.hy,
+			z: 0
+		}, {
+			x: 0,
+			y: 0,
+			z: 1
+		});
+		world.createImpulseJoint(bagJoint, anchor, bagBody, true);
+		bagMaterial = matPad.clone();
+		meshes.bag = new Mesh(new BoxGeometry(BAG.hx * 2, BAG.hy * 2, BAG.hz * 2), bagMaterial);
+		meshes.bag.position.set(BAG.x, BAG.topY - BAG.hy, 0);
+		scene.add(meshes.bag);
+		bodies.bag = bagBody;
+		bagBodyRef = bagBody;
 		bodyStartX = abdomen.translation().x;
 		resetMeasure();
 		updateDerived();
@@ -35248,11 +35277,15 @@ void main() {
 		measure.inContact = false;
 		measure.everContacted = false;
 		measure.firstDone = false;
+		measure.bagSpeedAtRelease = 0;
+		measure.bagMaxSpeed = 0;
 		contactElapsed = 0;
 		for (const el of [
 			ui.rSpeed,
 			ui.rPeak,
 			ui.rImpulse,
+			ui.rImpulseForce,
+			ui.rEnergy,
 			ui.rDur,
 			ui.rEffMass,
 			ui.rBody
@@ -35283,11 +35316,19 @@ void main() {
 	}
 	function exposeDiagnostics() {
 		function snapshot() {
+			const bagMass = BAG.mass;
+			const impulseBag = bagMass * measure.bagSpeedAtRelease;
+			const energyBag = .5 * bagMass * Math.pow(measure.bagSpeedAtRelease, 2);
 			return {
 				tipSpeed: measure.tipSpeed,
 				maxSpeed: measure.maxSpeed,
 				peak: measure.peak,
 				impulse: measure.impulse,
+				impulseBag,
+				impulseForce: measure.impulse,
+				energyBag,
+				bagSpeed: measure.bagSpeedAtRelease,
+				effectiveMass: measure.tipSpeed > .01 ? impulseBag / measure.tipSpeed : 0,
 				duration: measure.duration,
 				bodyTravel: measure.bodyTravel,
 				contacted: measure.everContacted
@@ -35426,6 +35467,12 @@ void main() {
 			measure.firstDone = true;
 		}
 		if (!measure.firstDone && measure.peak > 0 && forceThisStep < measure.peak * .1) measure.firstDone = true;
+		if (bagBodyRef) {
+			const bv = bagBodyRef.linvel();
+			const bspeed = Math.hypot(bv.x, bv.y, bv.z);
+			if (bspeed > measure.bagMaxSpeed) measure.bagMaxSpeed = bspeed;
+			if (measure.firstDone && measure.bagSpeedAtRelease === 0) measure.bagSpeedAtRelease = bspeed;
+		}
 		if (handCollider) {
 			const t = handCollider.translation();
 			if (lastHand) {
@@ -35449,10 +35496,14 @@ void main() {
 		if (measure.bodyTravel > 0) ui.rBody.textContent = (measure.bodyTravel * 100).toFixed(1) + " см";
 		if (!measure.everContacted) return;
 		ui.rPeak.textContent = Math.round(measure.peak) + " Н";
-		ui.rImpulse.textContent = measure.impulse.toFixed(2) + " Н·с";
+		const impulseBag = BAG.mass * measure.bagSpeedAtRelease;
+		const energyBag = .5 * BAG.mass * Math.pow(measure.bagSpeedAtRelease, 2);
+		ui.rImpulse.textContent = impulseBag.toFixed(2) + " Н·с";
+		ui.rImpulseForce.textContent = measure.impulse.toFixed(2) + " Н·с";
+		ui.rEnergy.textContent = energyBag.toFixed(2) + " Дж";
 		ui.rDur.textContent = Math.round(measure.duration * 1e3) + " мс";
 		const ref = measure.tipSpeed > .01 ? measure.tipSpeed : measure.maxSpeed;
-		const eff = ref > .01 ? measure.impulse / ref : 0;
+		const eff = ref > .01 ? impulseBag / ref : 0;
 		ui.rEffMass.textContent = eff.toFixed(2) + " кг";
 	}
 	function sync() {
@@ -35472,7 +35523,7 @@ void main() {
 			for (let i = 0; i < 4; i++) stepPhysics();
 			sync();
 			report();
-			if (padMaterial) padMaterial.color.setHex(performance.now() < flashUntil ? 13214247 : 4871528);
+			if (bagMaterial) bagMaterial.color.setHex(performance.now() < flashUntil ? 13214247 : 4871528);
 		}
 		renderer.render(scene, camera);
 	}
