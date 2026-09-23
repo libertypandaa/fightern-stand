@@ -33,18 +33,27 @@
   #punch { background: #2b3a2f; border-color: #3f5a46; font-weight: 600; }
   #hint { position: fixed; left: 14px; bottom: 12px; color: #7c8598; max-width: 40ch; }
   .dim { color: #7c8598; }
+  summary {
+    cursor: pointer; list-style: none; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: #8b95a7; margin: 0 0 8px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: " ▾"; }
+  details:not([open]) summary::after { content: " ▸"; }
+  details:not([open]) summary { margin-bottom: 0; }
 
   /* телефон: панели сверху и снизу, боец — в середине */
   @media (max-width: 780px), (orientation: portrait) {
-    .panel { left: 8px; right: 8px; width: auto; padding: 8px 10px; border-radius: 10px; }
-    #readout { top: 8px; font-size: 12px; }
-    #controls { top: auto; bottom: 8px; }
+    .panel { left: 6px; right: 6px; width: auto; padding: 6px 10px; border-radius: 10px; }
+    /* Панели не должны съедать бойца: держим их низкими, а лишнее — прокруткой. */
+    #readout { top: 6px; font-size: 11px; max-height: 34vh; overflow-y: auto; }
+    #controls { top: auto; bottom: 6px; max-height: 50vh; overflow-y: auto; }
     #hint { display: none; }
-    h2 { font-size: 10px; margin-bottom: 4px; }
-    label { margin: 4px 0 0; font-size: 12px; }
-    input[type=range] { height: 22px; }
-    .row { padding: 1px 0; }
-    button { padding: 12px 10px; }
+    h2 { font-size: 9px; margin-bottom: 2px; }
+    label { margin: 2px 0 0; font-size: 11px; }
+    input[type=range] { height: 18px; }
+    .row { padding: 0; }
+    button { padding: 9px 10px; margin-top: 6px; }
   }
 </style>
 </head>
@@ -52,7 +61,8 @@
 <div id="stage"></div>
 
 <div class="panel" id="controls">
-  <h2>Параметры</h2>
+  <details id="params" open>
+  <summary>Параметры</summary>
   <label>Масса руки <span class="val" id="v-mass">×1.00</span></label>
   <input type="range" id="mass" min="0.5" max="2.5" step="0.05" value="1" />
   <label>Длина руки <span class="val" id="v-len">×1.00</span></label>
@@ -65,6 +75,7 @@
   <input type="range" id="strike-rest" min="0.05" max="0.6" step="0.05" value="0.25" />
   <label>Время контакта, мс <span class="val" id="v-strike-time">8</span></label>
   <input type="range" id="strike-time" min="2" max="20" step="1" value="8" />
+  </details>
   <button id="punch">Удар</button>
   <button id="reset">Сброс</button>
 </div>
@@ -35822,6 +35833,7 @@ void main() {
 	ui.strikeTime.value = STRIKE.contactMs;
 	ui.vStrikeRest.textContent = STRIKE.restitution.toFixed(2);
 	ui.vStrikeTime.textContent = String(STRIKE.contactMs);
+	if (window.innerWidth <= 780 || window.matchMedia("(orientation: portrait)").matches) document.getElementById("params").open = false;
 	ui.mass.addEventListener("input", () => {
 		ui.vMass.textContent = "×" + (+ui.mass.value).toFixed(2);
 		build();
