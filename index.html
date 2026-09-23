@@ -35282,8 +35282,71 @@ void main() {
 		}
 	}
 	function exposeDiagnostics() {
+		function snapshot() {
+			return {
+				tipSpeed: measure.tipSpeed,
+				maxSpeed: measure.maxSpeed,
+				peak: measure.peak,
+				impulse: measure.impulse,
+				duration: measure.duration,
+				bodyTravel: measure.bodyTravel,
+				contacted: measure.everContacted
+			};
+		}
+		function runPunchSync(seconds) {
+			resetMeasure();
+			push.active = true;
+			push.remaining = .12;
+			push.torque = params().torque;
+			const dt = world.timestep;
+			const steps = Math.max(1, Math.round((seconds || 1.5) / dt));
+			for (let i = 0; i < steps; i++) stepPhysics();
+			return snapshot();
+		}
+		function physicsProbe() {
+			const out = {};
+			const dt = world.timestep;
+			const rest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(3, .3, 0));
+			world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1), rest);
+			const settleSteps = Math.round(1.5 / dt);
+			const totalSteps = Math.round(3 / dt);
+			let maxSpeedAfterSettle = 0;
+			for (let i = 0; i < totalSteps; i++) {
+				world.step(eventQueue);
+				if (i > settleSteps) {
+					const v = rest.linvel();
+					const sp = Math.hypot(v.x, v.y, v.z);
+					if (sp > maxSpeedAfterSettle) maxSpeedAfterSettle = sp;
+				}
+			}
+			out.restingMaxSpeed = maxSpeedAfterSettle;
+			world.removeRigidBody(rest);
+			const makeProbe = (x, vx) => {
+				const b = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, 2, 0).setGravityScale(0).setLinvel(vx, 0, 0));
+				world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1).setRestitution(1).setFriction(0), b);
+				return b;
+			};
+			const a = makeProbe(2.5, 1.5);
+			const b = makeProbe(3.5, -.5);
+			const p0 = a.mass() * a.linvel().x + b.mass() * b.linvel().x;
+			for (let i = 0; i < Math.round(1 / dt); i++) world.step(eventQueue);
+			const p1 = a.mass() * a.linvel().x + b.mass() * b.linvel().x;
+			out.momentumBefore = p0;
+			out.momentumAfter = p1;
+			out.momentumError = Math.abs(p1 - p0) / Math.max(1e-4, Math.abs(p0));
+			world.removeRigidBody(a);
+			world.removeRigidBody(b);
+			return out;
+		}
 		window.__stand = {
 			measure,
+			snapshot,
+			runPunch: runPunchSync,
+			probe: physicsProbe,
+			setTimestep: (dt) => {
+				world.timestep = dt;
+			},
+			rebuild: build,
 			read: () => {
 				const p = (b) => {
 					if (!b) return null;
