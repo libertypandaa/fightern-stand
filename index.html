@@ -84,6 +84,7 @@
   <input type="range" id="rise" min="20" max="300" step="10" value="20" />
   </details>
   <button id="punch">Удар</button>
+  <button id="series">Серия, 10</button>
   <button id="reset">Сброс</button>
 </div>
 
@@ -99,6 +100,8 @@
   <div class="row"><span class="dim">Скорость груши</span><b id="r-bagspeed">—</b></div>
   <div class="row"><span class="dim">Энергия в груше</span><b id="r-energy">—</b></div>
   <div class="row"><span class="dim">Время контакта</span><b id="r-dur">—</b></div>
+  <div class="row"><span class="dim">Ресурс руки</span><b id="r-stamina">100%</b></div>
+  <div class="row"><span class="dim">Ресурс ног</span><b id="r-stamina-legs">100%</b></div>
   <h2 style="margin-top:10px">Выведено из параметров</h2>
   <div class="row"><span class="dim">Масса руки</span><b id="d-mass">—</b></div>
   <div class="row"><span class="dim">Дальность от плеча</span><b id="d-reach">—</b></div>
@@ -34971,6 +34974,18 @@ void main() {
 	};
 	var LEG_LEVER = .95;
 	var MUSCLE = { wMax: 15 };
+	var FATIGUE = {
+		cost: 1,
+		power: 3,
+		floor: .4,
+		recover: .05,
+		ref: 120,
+		legRef: 1300
+	};
+	var stamina = {
+		arm: 1,
+		legs: 1
+	};
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -35007,6 +35022,9 @@ void main() {
 		rBagSpeed: document.getElementById("r-bagspeed"),
 		rEnergy: document.getElementById("r-energy"),
 		rDur: document.getElementById("r-dur"),
+		rStamina: document.getElementById("r-stamina"),
+		rStaminaLegs: document.getElementById("r-stamina-legs"),
+		series: document.getElementById("series"),
 		dMass: document.getElementById("d-mass"),
 		dReach: document.getElementById("d-reach"),
 		dInertia: document.getElementById("d-inertia"),
@@ -35505,44 +35523,78 @@ void main() {
 			ui.dMass.textContent = m.total.toFixed(2) + " кг" + (diff < .05 ? " ✓ движок" : " (движок: " + engineMass.toFixed(2) + ")");
 		}
 	}
+	function snapshot() {
+		return {
+			maxSpeed: measure.maxSpeed,
+			handSpeed: measure.handSpeed,
+			mArm: measure.mArm,
+			mBag: measure.mBag,
+			leverArm: measure.leverArm,
+			leverBag: measure.leverBag,
+			impulse: measure.impulse,
+			impulseCheck: measure.impulseCheck,
+			force: measure.force,
+			peak: measure.peak,
+			bagSpeed: measure.bagSpeed,
+			bagAngular: measure.bagAngular,
+			energyBag: measure.energyBag,
+			duration: params().contactMs / 1e3,
+			strikeAfter: measure.strikeAfter,
+			driveImpulse: measure.driveImpulse,
+			driveTotal: measure.driveTotal,
+			comShift: measure.comShift,
+			staminaArm: stamina.arm,
+			staminaLegs: stamina.legs,
+			contactY: measure.contactAt ? measure.contactAt.y : 0,
+			bodyTravel: measure.bodyTravel,
+			contacted: measure.everContacted,
+			struck: measure.strikeApplied
+		};
+	}
+	function runPunchSync(seconds) {
+		build();
+		settle(SETTLE_SECONDS);
+		freeze();
+		resetMeasure();
+		startPush();
+		const dt = world.timestep;
+		const steps = Math.max(1, Math.round((seconds || 1.5) / dt));
+		for (let i = 0; i < steps; i++) stepPhysics();
+		return snapshot();
+	}
+	function recoverFor(seconds) {
+		const f = 1 - Math.exp(-FATIGUE.recover * Math.max(0, seconds));
+		stamina.arm += (1 - stamina.arm) * f;
+		stamina.legs += (1 - stamina.legs) * f;
+	}
+	function runSeries(count, interval) {
+		const out = [];
+		for (let i = 0; i < count; i++) {
+			if (i > 0) recoverFor(interval);
+			const m = runPunchSync(1.5);
+			out.push({
+				n: i + 1,
+				impulse: m.impulse,
+				speed: m.handSpeed,
+				peak: m.peak,
+				strikeAfter: m.strikeAfter,
+				stamina: m.staminaArm,
+				contacted: m.contacted
+			});
+		}
+		return out;
+	}
+	function seriesRun(count, interval) {
+		runSeries(count, interval);
+		report();
+	}
+	function resetStamina() {
+		stamina = {
+			arm: 1,
+			legs: 1
+		};
+	}
 	function exposeDiagnostics() {
-		function snapshot() {
-			return {
-				maxSpeed: measure.maxSpeed,
-				handSpeed: measure.handSpeed,
-				mArm: measure.mArm,
-				mBag: measure.mBag,
-				leverArm: measure.leverArm,
-				leverBag: measure.leverBag,
-				impulse: measure.impulse,
-				impulseCheck: measure.impulseCheck,
-				force: measure.force,
-				peak: measure.peak,
-				bagSpeed: measure.bagSpeed,
-				bagAngular: measure.bagAngular,
-				energyBag: measure.energyBag,
-				duration: params().contactMs / 1e3,
-				strikeAfter: measure.strikeAfter,
-				driveImpulse: measure.driveImpulse,
-				driveTotal: measure.driveTotal,
-				comShift: measure.comShift,
-				contactY: measure.contactAt ? measure.contactAt.y : 0,
-				bodyTravel: measure.bodyTravel,
-				contacted: measure.everContacted,
-				struck: measure.strikeApplied
-			};
-		}
-		function runPunchSync(seconds) {
-			build();
-			settle(SETTLE_SECONDS);
-			freeze();
-			resetMeasure();
-			startPush();
-			const dt = world.timestep;
-			const steps = Math.max(1, Math.round((seconds || 1.5) / dt));
-			for (let i = 0; i < steps; i++) stepPhysics();
-			return snapshot();
-		}
 		function physicsProbe() {
 			const out = {};
 			const dt = world.timestep;
@@ -35582,6 +35634,16 @@ void main() {
 			measure,
 			snapshot,
 			runPunch: runPunchSync,
+			series: runSeries,
+			readStamina: () => ({ ...stamina }),
+			setStamina: (v) => {
+				stamina = {
+					arm: v,
+					legs: v
+				};
+				return { ...stamina };
+			},
+			resetStamina,
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
@@ -35944,14 +36006,17 @@ void main() {
 			const arm = bodies["upperArm_front"];
 			const k = Math.min(1, push.elapsed / push.rise);
 			const w = arm ? arm.angvel().z : 0;
-			const wMax = MUSCLE.wMax;
-			const tEff = push.torque * k;
+			const fresh = FATIGUE.floor + (1 - FATIGUE.floor) * stamina.arm;
+			const wMax = MUSCLE.wMax * fresh;
+			const tEff = push.torque * fresh * k;
 			let step = 0;
 			if (tEff > 0 && w < wMax) {
 				const decay = Math.exp(-(tEff / (push.armI * wMax)) * dt);
 				const wNext = wMax + (w - wMax) * decay;
 				step = Math.min(tEff * dt, push.armI * (wNext - w));
 			}
+			const legShare = push.legTorque > 0 ? Math.abs(push.legTorque) / FATIGUE.legRef : 0;
+			stamina.arm -= FATIGUE.cost * Math.pow(push.torque / FATIGUE.ref, FATIGUE.power) * dt / (1 + legShare);
 			if (arm) arm.applyTorqueImpulse({
 				x: 0,
 				y: 0,
@@ -35971,16 +36036,20 @@ void main() {
 				}, true);
 			}
 			const legTorque = push.legTorque * driveShare.ankle;
-			if (legTorque) for (const side of ["front", "back"]) {
-				const shin = bodies["shin_" + side];
-				if (!shin) continue;
-				const legSpeed = Math.abs(shin.angvel().z);
-				const legLoad = Math.max(0, 1 - legSpeed / MUSCLE.wMax);
-				shin.applyTorqueImpulse({
-					x: 0,
-					y: 0,
-					z: legTorque * k * legLoad * dt
-				}, true);
+			if (legTorque) {
+				const freshLegs = FATIGUE.floor + (1 - FATIGUE.floor) * stamina.legs;
+				for (const side of ["front", "back"]) {
+					const shin = bodies["shin_" + side];
+					if (!shin) continue;
+					const legSpeed = Math.abs(shin.angvel().z);
+					const legLoad = Math.max(0, 1 - legSpeed / (MUSCLE.wMax * freshLegs));
+					shin.applyTorqueImpulse({
+						x: 0,
+						y: 0,
+						z: legTorque * freshLegs * k * legLoad * dt
+					}, true);
+				}
+				stamina.legs -= FATIGUE.cost * Math.pow(legTorque / FATIGUE.legRef, FATIGUE.power) * dt;
 			}
 			driveImpulse += step;
 			driveTotal += step * (driveShare.arm + Math.abs(driveShare.chest) + 2 * Math.abs(driveShare.hip)) + 2 * Math.abs(legTorque) * k * dt;
@@ -36044,6 +36113,12 @@ void main() {
 		}
 		const comShift = Math.abs(bodyComX() - comStart);
 		if (comShift > measure.comShift) measure.comShift = comShift;
+		if (!push.active) {
+			stamina.arm += FATIGUE.recover * (1 - stamina.arm) * dt;
+			stamina.legs += FATIGUE.recover * (1 - stamina.legs) * dt;
+		}
+		stamina.arm = Math.max(0, Math.min(1, stamina.arm));
+		stamina.legs = Math.max(0, Math.min(1, stamina.legs));
 	}
 	function report() {
 		if (!measure.strikeApplied) return;
@@ -36057,6 +36132,8 @@ void main() {
 		ui.rBagSpeed.textContent = measure.bagSpeed.toFixed(2) + " м/с";
 		ui.rEnergy.textContent = measure.energyBag.toFixed(2) + " Дж";
 		ui.rDur.textContent = Math.round(params().contactMs) + " мс";
+		ui.rStamina.textContent = Math.round(stamina.arm * 100) + "%";
+		ui.rStaminaLegs.textContent = Math.round(stamina.legs * 100) + "%";
 	}
 	function sync() {
 		for (const key of Object.keys(meshes)) {
@@ -36121,7 +36198,13 @@ void main() {
 		updateDerived();
 	});
 	ui.punch.addEventListener("click", punch);
-	ui.reset.addEventListener("click", build);
+	ui.series.addEventListener("click", () => {
+		seriesRun(10, 3);
+	});
+	ui.reset.addEventListener("click", () => {
+		resetStamina();
+		build();
+	});
 	fitCamera();
 	Og.init().then(() => {
 		build();
