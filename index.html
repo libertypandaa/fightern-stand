@@ -17,8 +17,9 @@
     position: fixed; background: rgba(16,19,24,.88); border: 1px solid #262b34;
     border-radius: 12px; padding: 12px 14px; backdrop-filter: blur(4px);
   }
-  #controls { left: 14px; top: 14px; width: 272px; }
-  #readout  { right: 14px; top: 14px; width: 268px; }
+  /* Панель может стать выше экрана — пусть прокручивается, иначе кнопки уедут. */
+  #controls { left: 14px; top: 14px; width: 272px; max-height: calc(100vh - 28px); overflow-y: auto; }
+  #readout  { right: 14px; top: 14px; width: 268px; max-height: calc(100vh - 28px); overflow-y: auto; }
   h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8b95a7; margin: 0 0 8px; }
   label { display: block; margin: 9px 0 2px; color: #aab3c2; }
   input[type=range] { width: 100%; height: 26px; }
@@ -33,6 +34,8 @@
   #punch { background: #2b3a2f; border-color: #3f5a46; font-weight: 600; }
   /* Подпись — просто текст: она не должна перехватывать нажатия на кнопки. */
   #hint { position: fixed; right: 14px; bottom: 12px; color: #7c8598; max-width: 34ch; text-align: right; pointer-events: none; }
+  /* На низких экранах подпись не помещается между панелями — убираем её. */
+  @media (max-height: 900px) { #hint { display: none; } }
   .dim { color: #7c8598; }
   summary {
     cursor: pointer; list-style: none; font-size: 11px; letter-spacing: .08em;
@@ -82,6 +85,21 @@
   <input type="range" id="strike-time" min="2" max="20" step="1" value="8" />
   <label>Структура: вязкая → кристалл <span class="val" id="v-structure">0.50</span></label>
   <input type="range" id="structure" min="0" max="1" step="0.05" value="0.5" />
+  <label>Цель: структура <span class="val" id="v-target-structure">0.50</span></label>
+  <input type="range" id="target-structure" min="0" max="1" step="0.05" value="0.5" />
+  <label>Зона цели</label>
+  <select id="zone">
+    <option value="head">голова</option>
+    <option value="chest">грудь</option>
+    <option value="abdomen">живот</option>
+    <option value="upperArm">плечо</option>
+    <option value="forearm">предплечье</option>
+    <option value="hand">кисть</option>
+    <option value="thigh">бедро</option>
+    <option value="shin">голень</option>
+    <option value="foot">стопа</option>
+  </select>
+  <label><input type="checkbox" id="seam" /> спайка в зоне</label>
   <label>Нарастание усилия, мс <span class="val" id="v-rise">20</span></label>
   <input type="range" id="rise" min="20" max="300" step="10" value="20" />
   </details>
@@ -112,6 +130,10 @@
   <div class="row"><span class="dim">Цена разгона</span><b id="d-cost">—</b></div>
   <div class="row"><span class="dim">Развитие усилия в кисти</span><b id="d-rfd">—</b></div>
   <div class="row"><span class="dim">Предел прочности</span><b id="d-strength">—</b></div>
+  <div class="row"><span class="dim">Ёмкость зоны цели</span><b id="d-capacity">—</b></div>
+  <div class="row"><span class="dim">Урон за удар</span><b id="d-hitenergy">—</b></div>
+  <div class="row"><span class="dim">Шкала зоны цели</span><b id="d-zonedamage">—</b></div>
+  <div class="row"><span class="dim">Шкала своей кисти</span><b id="d-handdamage">—</b></div>
 </div>
 
 <div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
@@ -35005,6 +35027,19 @@ void main() {
 		arm: 1,
 		legs: 1
 	};
+	var DAMAGE = {
+		total: 200,
+		decayPerSec: .03,
+		seamMul: 1.5,
+		seamBrittle: .6
+	};
+	var CRIT = {
+		headRef: 5e3,
+		massRef: .081,
+		crystalMul: .45
+	};
+	var damage = {};
+	var broken = {};
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -35017,6 +35052,9 @@ void main() {
 		stiffness: document.getElementById("stiffness"),
 		bend: document.getElementById("bend"),
 		legs: document.getElementById("legs"),
+		targetStructure: document.getElementById("target-structure"),
+		zone: document.getElementById("zone"),
+		seam: document.getElementById("seam"),
 		strikeRest: document.getElementById("strike-rest"),
 		strikeTime: document.getElementById("strike-time"),
 		structure: document.getElementById("structure"),
@@ -35030,6 +35068,7 @@ void main() {
 		vStrikeRest: document.getElementById("v-strike-rest"),
 		vStrikeTime: document.getElementById("v-strike-time"),
 		vStructure: document.getElementById("v-structure"),
+		vTargetStructure: document.getElementById("v-target-structure"),
 		vRise: document.getElementById("v-rise"),
 		punch: document.getElementById("punch"),
 		reset: document.getElementById("reset"),
@@ -35052,7 +35091,11 @@ void main() {
 		dCom: document.getElementById("d-com"),
 		dCost: document.getElementById("d-cost"),
 		dRfd: document.getElementById("d-rfd"),
-		dStrength: document.getElementById("d-strength")
+		dStrength: document.getElementById("d-strength"),
+		dCapacity: document.getElementById("d-capacity"),
+		dHitEnergy: document.getElementById("d-hitenergy"),
+		dZoneDamage: document.getElementById("d-zonedamage"),
+		dHandDamage: document.getElementById("d-handdamage")
 	};
 	var renderer = new WebGLRenderer({ antialias: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -35117,6 +35160,15 @@ void main() {
 		impulse: 0,
 		force: 0,
 		peak: 0,
+		absorbed: 0,
+		energyToZone: 0,
+		energyToHand: 0,
+		zoneCapacity: 0,
+		zoneCritical: 0,
+		zoneDamage: 0,
+		handDamage: 0,
+		zoneBroken: false,
+		handBroken: false,
 		mArm: 0,
 		mBag: 0,
 		leverArm: 0,
@@ -35226,8 +35278,46 @@ void main() {
 			bend: parseFloat(ui.bend.value) / 100,
 			legForce: parseFloat(ui.legs.value),
 			muscle: muscleBase,
-			structure: parseFloat(ui.structure.value)
+			structure: parseFloat(ui.structure.value),
+			targetStructure: parseFloat(ui.targetStructure.value),
+			zone: ui.zone.value,
+			seam: ui.seam.checked
 		};
+	}
+	function zoneCapacity(kind, structureValue) {
+		const mass = ZONE[kind].frac * BODY_MASS;
+		const tough = structureOf({ structure: structureValue }).strength;
+		const pair = PAIRED_ZONES.includes(kind) ? 2 : 1;
+		return DAMAGE.total * (mass / BODY_MASS) * tough * pair;
+	}
+	var PAIRED_ZONES = [
+		"upperArm",
+		"forearm",
+		"hand",
+		"thigh",
+		"shin",
+		"foot"
+	];
+	function zoneCriticalForce(kind, structureValue) {
+		const frac = ZONE[kind].frac * (PAIRED_ZONES.includes(kind) ? 2 : 1);
+		const ratio = Math.pow(frac / CRIT.massRef, 2 / 3);
+		const brittle = 1 - (1 - CRIT.crystalMul) * structureValue;
+		return CRIT.headRef * ratio * brittle;
+	}
+	function addDamage(kind, energyJ, structureValue, hasSeam, peakForce) {
+		if (broken[kind]) return;
+		const cap = zoneCapacity(kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
+		if (energyJ > 0) damage[kind] = (damage[kind] || 0) + energyJ;
+		const crit = zoneCriticalForce(kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
+		const forced = peakForce > 0 && peakForce >= crit;
+		const seamBreak = hasSeam && peakForce > 0 && peakForce >= crit * DAMAGE.seamBrittle;
+		if (forced || seamBreak || (damage[kind] || 0) >= cap) broken[kind] = true;
+	}
+	function decayDamage(dt) {
+		for (const kind of Object.keys(damage)) {
+			const cap = zoneCapacity(kind, params().targetStructure);
+			damage[kind] = Math.max(0, damage[kind] - cap * DAMAGE.decayPerSec * dt);
+		}
 	}
 	function addBox(body, hx, hy, hz, ox, oy, mass, opts) {
 		const o = opts || {};
@@ -35506,6 +35596,15 @@ void main() {
 		measure.bagAngular = 0;
 		measure.energyBag = 0;
 		measure.impulseCheck = 0;
+		measure.absorbed = 0;
+		measure.energyToZone = 0;
+		measure.energyToHand = 0;
+		measure.zoneCapacity = 0;
+		measure.zoneCritical = 0;
+		measure.zoneDamage = 0;
+		measure.handDamage = 0;
+		measure.zoneBroken = false;
+		measure.handBroken = false;
 		measure.checkPending = 0;
 		measure.contactT = 0;
 		measure.contactAt = null;
@@ -35540,6 +35639,9 @@ void main() {
 		const reach = m.LU + m.LF + m.LH;
 		ui.dRfd.textContent = Math.round(p.torque / reach / Math.max(p.rise, .001)) + " Н/с";
 		ui.dStrength.textContent = Math.round(structureOf(p).strength * 100) + "%";
+		const cap = zoneCapacity(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		const crit = zoneCriticalForce(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		ui.dCapacity.textContent = cap.toFixed(1) + " Дж / " + Math.round(crit / 1e3 * 10) / 10 + " кН" + (p.seam ? " (спайка)" : "");
 		const fore = bodies["forearm_front"];
 		const upper = bodies["upperArm_front"];
 		if (fore && upper) {
@@ -35574,6 +35676,22 @@ void main() {
 			strength: structureOf(params()).strength,
 			damping: structureOf(params()).damping,
 			rest: params().restitution,
+			targetStructure: params().targetStructure,
+			zone: params().zone,
+			absorbed: measure.absorbed,
+			energyToZone: measure.energyToZone,
+			energyToHand: measure.energyToHand,
+			zoneCapacity: measure.zoneCapacity,
+			zoneCritical: measure.zoneCritical,
+			zoneDamage: measure.zoneDamage,
+			handDamage: measure.handDamage,
+			armDamage: measure.armDamage || {
+				upperArm: 0,
+				forearm: 0,
+				hand: 0
+			},
+			zoneBroken: measure.zoneBroken,
+			handBroken: measure.handBroken,
 			contactY: measure.contactAt ? measure.contactAt.y : 0,
 			bodyTravel: measure.bodyTravel,
 			contacted: measure.everContacted,
@@ -35622,6 +35740,10 @@ void main() {
 			arm: 1,
 			legs: 1
 		};
+	}
+	function resetDamage() {
+		for (const k of Object.keys(damage)) delete damage[k];
+		for (const k of Object.keys(broken)) delete broken[k];
 	}
 	function exposeDiagnostics() {
 		function physicsProbe() {
@@ -35673,6 +35795,13 @@ void main() {
 				return { ...stamina };
 			},
 			resetStamina,
+			readDamage: () => ({
+				damage: { ...damage },
+				broken: { ...broken }
+			}),
+			resetDamage,
+			capacity: (kind, structureValue) => zoneCapacity(kind, structureValue === void 0 ? params().targetStructure : structureValue),
+			criticalForce: (kind, structureValue) => zoneCriticalForce(kind, structureValue === void 0 ? params().targetStructure : structureValue),
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
@@ -36003,7 +36132,11 @@ void main() {
 		const leverBag = Math.abs(leverZ(pivot, point, n));
 		const bagI = bagInertia();
 		const mBag = leverBag > 1e-4 ? bagI / (leverBag * leverBag) : Infinity;
-		const J = (1 + p.restitution) * (mArm * mBag) / (mArm + mBag) * speed;
+		const st = structureOf(p);
+		const tt = structureOf({ structure: p.targetStructure });
+		const e = (st.rest + tt.rest) / 2;
+		const contactMs = (st.contactMs + tt.contactMs) / 2;
+		const J = (1 + e) * (mArm * mBag) / (mArm + mBag) * speed;
 		bagBodyRef.applyImpulseAtPoint({
 			x: n.x * J,
 			y: n.y * J,
@@ -36017,10 +36150,43 @@ void main() {
 		measure.strikeApplied = true;
 		measure.handSpeed = speed;
 		measure.impulse = J;
-		measure.force = J / (p.contactMs / 1e3);
+		measure.force = J / (contactMs / 1e3);
 		measure.peak = measure.force * Math.PI / 2;
 		measure.driveImpulse = driveImpulse;
 		measure.driveTotal = driveTotal;
+		const zoneMass = ZONE[p.zone].frac * BODY_MASS;
+		const mu = mArm * zoneMass / (mArm + zoneMass);
+		const omega = fore ? Math.abs(fore.angvel().z) : 0;
+		const keArm = .5 * arm.inertia * omega * omega;
+		const absorbed = Math.min(.5 * mu * speed * speed * (1 - e * e), keArm);
+		const softSelf = 1.05 - p.structure;
+		const softTarget = 1.05 - p.targetStructure;
+		const shareTarget = softTarget / (softSelf + softTarget);
+		const shareSelf = softSelf / (softSelf + softTarget);
+		const energyToZone = absorbed * shareTarget;
+		const energyToHand = absorbed * shareSelf;
+		addDamage(p.zone, energyToZone, p.targetStructure, p.seam, measure.peak);
+		const armZones = [
+			"upperArm",
+			"forearm",
+			"hand"
+		];
+		const armMassTotal = armZones.reduce((a, k) => a + ZONE[k].frac * BODY_MASS, 0);
+		for (const k of armZones) addDamage(k, energyToHand * (ZONE[k].frac * BODY_MASS / armMassTotal), p.structure, false, measure.peak);
+		measure.absorbed = absorbed;
+		measure.energyToZone = energyToZone;
+		measure.energyToHand = energyToHand;
+		measure.zoneCapacity = zoneCapacity(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		measure.zoneCritical = zoneCriticalForce(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		measure.zoneDamage = damage[p.zone] || 0;
+		measure.handDamage = damage.hand || 0;
+		measure.armDamage = {
+			upperArm: damage.upperArm || 0,
+			forearm: damage.forearm || 0,
+			hand: damage.hand || 0
+		};
+		measure.zoneBroken = !!broken[p.zone];
+		measure.handBroken = !!broken.hand;
 		measure.mArm = mArm;
 		measure.mBag = mBag;
 		measure.leverArm = leverArm;
@@ -36148,6 +36314,7 @@ void main() {
 		}
 		stamina.arm = Math.max(0, Math.min(1, stamina.arm));
 		stamina.legs = Math.max(0, Math.min(1, stamina.legs));
+		decayDamage(dt);
 	}
 	function report() {
 		if (!measure.strikeApplied) return;
@@ -36163,6 +36330,11 @@ void main() {
 		ui.rDur.textContent = Math.round(params().contactMs) + " мс";
 		ui.rStamina.textContent = Math.round(stamina.arm * 100) + "%";
 		ui.rStaminaLegs.textContent = Math.round(stamina.legs * 100) + "%";
+		ui.dHitEnergy.textContent = measure.energyToZone.toFixed(1) + " Дж";
+		const cap = Math.max(.01, measure.zoneCapacity);
+		ui.dZoneDamage.textContent = Math.round(Math.min(100, measure.zoneDamage / cap * 100)) + "%" + (measure.zoneBroken ? " — отломана" : "");
+		const handCap = Math.max(.01, zoneCapacity("hand", params().structure));
+		ui.dHandDamage.textContent = Math.round(Math.min(100, measure.handDamage / handCap * 100)) + "%" + (measure.handBroken ? " — отломана" : "");
 	}
 	function sync() {
 		for (const key of Object.keys(meshes)) {
@@ -36215,6 +36387,12 @@ void main() {
 	ui.legs.addEventListener("input", () => {
 		ui.vLegs.textContent = ui.legs.value;
 	});
+	ui.targetStructure.addEventListener("input", () => {
+		ui.vTargetStructure.textContent = (+ui.targetStructure.value).toFixed(2);
+		updateDerived();
+	});
+	ui.zone.addEventListener("change", updateDerived);
+	ui.seam.addEventListener("change", updateDerived);
 	ui.strikeRest.addEventListener("input", () => {
 		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
 	});
@@ -36241,6 +36419,7 @@ void main() {
 	});
 	ui.reset.addEventListener("click", () => {
 		resetStamina();
+		resetDamage();
 		build();
 	});
 	fitCamera();
