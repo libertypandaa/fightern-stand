@@ -31,7 +31,8 @@
     border: 1px solid #3a4152; background: #1b2029; color: #e6e9ef; font: inherit;
   }
   #punch { background: #2b3a2f; border-color: #3f5a46; font-weight: 600; }
-  #hint { position: fixed; left: 14px; bottom: 12px; color: #7c8598; max-width: 40ch; }
+  /* Подпись — просто текст: она не должна перехватывать нажатия на кнопки. */
+  #hint { position: fixed; right: 14px; bottom: 12px; color: #7c8598; max-width: 34ch; text-align: right; pointer-events: none; }
   .dim { color: #7c8598; }
   summary {
     cursor: pointer; list-style: none; font-size: 11px; letter-spacing: .08em;
@@ -73,6 +74,8 @@
   <input type="range" id="stiffness" min="0.2" max="2" step="0.1" value="1" />
   <label>Сгиб коленей, см <span class="val" id="v-bend">0</span></label>
   <input type="range" id="bend" min="0" max="12" step="1" value="0" />
+  <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
+  <input type="range" id="legs" min="0" max="800" step="25" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
   <input type="range" id="strike-rest" min="0.05" max="0.6" step="0.05" value="0.25" />
   <label>Время контакта, мс <span class="val" id="v-strike-time">8</span></label>
@@ -105,7 +108,7 @@
   <div class="row"><span class="dim">Развитие усилия в кисти</span><b id="d-rfd">—</b></div>
 </div>
 
-<div id="hint">Пятнадцать модулей, настоящие массы. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело, справа — что из этого следует.</div>
+<div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
 
 <script>
 (function() {
@@ -34960,6 +34963,13 @@ void main() {
 	};
 	var SETTLE_SECONDS = .6;
 	var SOLVER_ITERATIONS = 16;
+	var BALANCE = {
+		kp: 2600,
+		kd: 260,
+		limit: 260,
+		lag: .25
+	};
+	var LEG_LEVER = .95;
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -34971,6 +34981,7 @@ void main() {
 		torque: document.getElementById("torque"),
 		stiffness: document.getElementById("stiffness"),
 		bend: document.getElementById("bend"),
+		legs: document.getElementById("legs"),
 		strikeRest: document.getElementById("strike-rest"),
 		strikeTime: document.getElementById("strike-time"),
 		rise: document.getElementById("rise"),
@@ -34979,6 +34990,7 @@ void main() {
 		vTorque: document.getElementById("v-torque"),
 		vStiff: document.getElementById("v-stiff"),
 		vBend: document.getElementById("v-bend"),
+		vLegs: document.getElementById("v-legs"),
 		vStrikeRest: document.getElementById("v-strike-rest"),
 		vStrikeTime: document.getElementById("v-strike-time"),
 		vRise: document.getElementById("v-rise"),
@@ -35086,6 +35098,7 @@ void main() {
 	var push = {
 		active: false,
 		torque: 0,
+		legTorque: 0,
 		rise: .02,
 		elapsed: 0,
 		total: 0
@@ -35093,7 +35106,12 @@ void main() {
 	var driveImpulse = 0;
 	var driveTotal = 0;
 	var comStart = 0;
-	var jointContactsOn = true;
+	var jointContactsOn = false;
+	var comRef = 0;
+	var comPrev = 0;
+	var balErr = 0;
+	var balVel = 0;
+	var muscleBase = 6e3;
 	var MESH_BODY = {
 		hand_front: "forearm_front",
 		hand_back: "forearm_back"
@@ -35163,7 +35181,9 @@ void main() {
 			restitution: parseFloat(ui.strikeRest.value),
 			contactMs: parseFloat(ui.strikeTime.value),
 			rise: parseFloat(ui.rise.value) / 1e3,
-			bend: parseFloat(ui.bend.value) / 100
+			bend: parseFloat(ui.bend.value) / 100,
+			legForce: parseFloat(ui.legs.value),
+			muscle: muscleBase
 		};
 	}
 	function addBox(body, hx, hy, hz, ox, oy, mass, opts) {
@@ -35301,8 +35321,8 @@ void main() {
 			bodies["upperArm_" + side] = upper;
 			bodies["forearm_" + side] = fore;
 		}
-		const stiff = 900 * p.stance;
-		const damp = 60 * p.stance;
+		const stiff = p.muscle * p.stance;
+		const damp = Math.sqrt(p.muscle / 900) * 60 * p.stance;
 		function hinge(b1, a1, b2, a2, stiffness, damping, target) {
 			const j = world.createImpulseJoint(Og.JointData.revolute(a1, a2, {
 				x: 0,
@@ -35328,7 +35348,7 @@ void main() {
 				x: 0,
 				y: -L.shin,
 				z: 0
-			}, stiff, damp, -aShin);
+			}, stiff * .2, damp * .45, -aShin);
 			joints["knee_" + side] = hinge(shin, {
 				x: 0,
 				y: 0,
@@ -35337,7 +35357,7 @@ void main() {
 				x: 0,
 				y: -L.thigh,
 				z: 0
-			}, stiff, damp, -(aThigh - aShin));
+			}, stiff * 4, damp * 2, -(aThigh - aShin));
 			joints["hip_" + side] = hinge(thigh, {
 				x: 0,
 				y: 0,
@@ -35346,7 +35366,7 @@ void main() {
 				x,
 				y: 0,
 				z: 0
-			}, stiff * 1.4, damp * 1.4, aThigh);
+			}, stiff * 6, damp * 2.5, aThigh);
 		}
 		joints.spine = hinge(abdomen, {
 			x: 0,
@@ -35369,7 +35389,7 @@ void main() {
 		for (const side of ["back", "front"]) {
 			const ax = side === "back" ? ARM_BACK_X : ARM_FRONT_X;
 			const shoulderStiff = side === "front" ? 0 : stiff * .5;
-			const elbowStiff = side === "front" ? 0 : stiff * .4;
+			const elbowStiff = side === "front" ? stiff * p.massMul : stiff * .4;
 			const armZ = side === "front" ? ARM_Z : -.28;
 			joints["shoulder_" + side] = hinge(chest, {
 				x: ax,
@@ -35419,6 +35439,10 @@ void main() {
 		bodies.bag = bagBody;
 		bagBodyRef = bagBody;
 		bodyStartX = abdomen.translation().x;
+		comRef = bodyComX();
+		comPrev = comRef;
+		balErr = 0;
+		balVel = 0;
 		resetMeasure();
 		updateDerived();
 		exposeDiagnostics();
@@ -35569,6 +35593,14 @@ void main() {
 			setIterations: (n) => {
 				world.numSolverIterations = n;
 			},
+			setMuscle: (k) => {
+				muscleBase = k;
+				return muscleBase;
+			},
+			setBalance: (o) => {
+				Object.assign(BALANCE, o);
+				return { ...BALANCE };
+			},
 			setJointContacts: (on) => {
 				jointContactsOn = !!on;
 				for (const j of Object.values(joints)) j.setContactsEnabled(jointContactsOn);
@@ -35635,6 +35667,7 @@ void main() {
 		const p = params();
 		push.active = true;
 		push.torque = p.torque;
+		push.legTorque = p.legForce * LEG_LEVER;
 		push.rise = Math.max(.001, p.rise);
 		push.total = DRIVE.full + push.rise / 2;
 		push.elapsed = 0;
@@ -35653,6 +35686,25 @@ void main() {
 			mx += mass * c.x;
 		}
 		return m > 0 ? mx / m : 0;
+	}
+	function balanceStep(dt) {
+		const com = bodyComX();
+		const err = com - comRef;
+		const a = BALANCE.lag > 0 ? dt / (BALANCE.lag + dt) : 1;
+		balErr += (err - balErr) * a;
+		balVel += ((dt > 0 ? (com - comPrev) / dt : 0) - balVel) * a;
+		comPrev = com;
+		let torque = BALANCE.kp * balErr + BALANCE.kd * balVel;
+		if (torque > BALANCE.limit) torque = BALANCE.limit;
+		if (torque < -BALANCE.limit) torque = -BALANCE.limit;
+		for (const side of ["front", "back"]) {
+			const shin = bodies["shin_" + side];
+			if (shin) shin.applyTorqueImpulse({
+				x: 0,
+				y: 0,
+				z: torque * dt
+			}, true);
+		}
 	}
 	function settle(seconds) {
 		const steps = Math.max(0, Math.round(seconds / world.timestep));
@@ -35675,6 +35727,10 @@ void main() {
 				z: 0
 			}, false);
 		}
+		comRef = bodyComX();
+		comPrev = comRef;
+		balErr = 0;
+		balVel = 0;
 	}
 	function shoulderPoint() {
 		const chest = bodies.chest;
@@ -35698,7 +35754,12 @@ void main() {
 	function contactPoint(prev, cur) {
 		if (!bagCollider || !prev) return {
 			point: cur,
-			t: 1
+			t: 1,
+			normal: {
+				x: 1,
+				y: 0,
+				z: 0
+			}
 		};
 		const pad = handHalf || {
 			x: 0,
@@ -35730,27 +35791,36 @@ void main() {
 			z: b.z - a.z
 		};
 		let tMin = 0, tMax = 1;
-		for (const [o, dd, h] of [
+		let faceAxis = 0, faceSign = -1;
+		const axes = [
 			[
-				a.x,
+				"x",
 				d.x,
 				hx
 			],
 			[
-				a.y,
+				"y",
 				d.y,
 				hy
 			],
 			[
-				a.z,
+				"z",
 				d.z,
 				hz
 			]
-		]) {
+		];
+		for (let i = 0; i < axes.length; i++) {
+			const [key, dd, h] = axes[i];
+			const o = key === "x" ? a.x : key === "y" ? a.y : a.z;
 			if (Math.abs(dd) < 1e-9) {
 				if (Math.abs(o) > h) return {
 					point: cur,
-					t: 1
+					t: 1,
+					normal: {
+						x: 1,
+						y: 0,
+						z: 0
+					}
 				};
 				continue;
 			}
@@ -35760,38 +35830,50 @@ void main() {
 				t1 = t2;
 				t2 = tmp;
 			}
-			if (t1 > tMin) tMin = t1;
+			if (t1 > tMin) {
+				tMin = t1;
+				faceAxis = i;
+				faceSign = dd > 0 ? -1 : 1;
+			}
 			if (t2 < tMax) tMax = t2;
 			if (tMin > tMax) return {
 				point: cur,
-				t: 1
+				t: 1,
+				normal: {
+					x: 1,
+					y: 0,
+					z: 0
+				}
 			};
 		}
-		const back = rotateByQuat({
+		const local = {
 			x: a.x + d.x * tMin,
 			y: a.y + d.y * tMin,
 			z: a.z + d.z * tMin
+		};
+		const normal = rotateByQuat({
+			x: faceAxis === 0 ? faceSign : 0,
+			y: faceAxis === 1 ? faceSign : 0,
+			z: faceAxis === 2 ? faceSign : 0
 		}, q);
+		const back = rotateByQuat(local, q);
 		return {
 			point: {
 				x: c.x + back.x,
 				y: c.y + back.y,
 				z: c.z + back.z
 			},
-			t: tMin
+			t: tMin,
+			normal
 		};
 	}
-	function strike(point, v) {
+	function strike(point, v, normal) {
 		const fore = bodies["forearm_front"];
 		const p = params();
 		if (!fore || !bagBodyRef) return;
-		const speed = Math.hypot(v.x, v.y, v.z);
+		const n = normal;
+		const speed = v.x * n.x + v.y * n.y + v.z * n.z;
 		if (speed < .05) return;
-		const n = {
-			x: v.x / speed,
-			y: v.y / speed,
-			z: v.z / speed
-		};
 		const arm = armModel(p);
 		const shoulder = shoulderPoint();
 		const leverArm = Math.abs(leverZ(shoulder, point, n));
@@ -35854,21 +35936,23 @@ void main() {
 					z: step * driveShare.hip
 				}, true);
 			}
-			if (driveShare.ankle) for (const side of ["front", "back"]) {
+			const legTorque = push.legTorque * driveShare.ankle;
+			if (legTorque) for (const side of ["front", "back"]) {
 				const shin = bodies["shin_" + side];
 				if (shin) shin.applyTorqueImpulse({
 					x: 0,
 					y: 0,
-					z: step * driveShare.ankle
+					z: legTorque * k * dt
 				}, true);
 			}
 			driveImpulse += step;
-			driveTotal += step * (driveShare.arm + Math.abs(driveShare.chest) + 2 * Math.abs(driveShare.hip) + 2 * Math.abs(driveShare.ankle));
+			driveTotal += step * (driveShare.arm + Math.abs(driveShare.chest) + 2 * Math.abs(driveShare.hip)) + 2 * Math.abs(legTorque) * k * dt;
 			push.elapsed += dt;
 			if (push.elapsed >= push.total) push.active = false;
 		}
 		const prevHand = lastHand;
 		const prevVel = lastHandVel;
+		balanceStep(dt);
 		world.step(eventQueue);
 		if (measure.checkPending && bagBodyRef) {
 			const w = bagBodyRef.angvel();
@@ -35902,7 +35986,7 @@ void main() {
 			};
 			measure.strikeAfter = sincePunch;
 			measure.rawSpeed = prevHand ? Math.hypot(cur.x - prevHand.x, cur.y - prevHand.y, cur.z - prevHand.z) / dt : 0;
-			strike(hit.point, v);
+			strike(hit.point, v, hit.normal);
 		});
 		if (handCollider) {
 			const t = handCollider.translation();
@@ -35984,6 +36068,9 @@ void main() {
 	ui.bend.addEventListener("input", () => {
 		ui.vBend.textContent = ui.bend.value;
 		build();
+	});
+	ui.legs.addEventListener("input", () => {
+		ui.vLegs.textContent = ui.legs.value;
 	});
 	ui.strikeRest.addEventListener("input", () => {
 		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
