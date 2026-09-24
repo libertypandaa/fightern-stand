@@ -34987,6 +34987,8 @@ void main() {
 		hz: .36,
 		mass: 20
 	};
+	var bagX = BAG.x;
+	var bagPhase = 0;
 	var STRIKE = {
 		restitution: .25,
 		contactMs: 8
@@ -35537,6 +35539,8 @@ void main() {
 		scene.add(groundMesh);
 		meshes.ground = groundMesh;
 		const T = .1;
+		if (bagPhase > 0) bagX = ARM_FRONT_X + (L.upperArm + L.forearm + L.hand) * Math.sin(bagPhase) + BAG.hx;
+		else bagX = BAG.x;
 		const dampLimb = p.structure === void 0 ? .1 : structureOf(p).damping;
 		const bend = Math.max(0, Math.min(p.bend, .9 * Math.min(L.thigh, L.shin)));
 		const aThigh = Math.asin(Math.min(.99, bend / L.thigh));
@@ -35702,8 +35706,8 @@ void main() {
 				z: 0
 			}, elbowStiff, damp * .4);
 		}
-		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(BAG.x, BAG.topY, 0));
-		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(BAG.x, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
+		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(bagX, BAG.topY, 0));
+		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(bagX, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
 		bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, BAG.mass, {
 			friction: .8,
 			restitution: .2,
@@ -35726,7 +35730,7 @@ void main() {
 		world.createImpulseJoint(bagJoint, anchor, bagBody, true);
 		bagMaterial = matPad.clone();
 		meshes.bag = new Mesh(new BoxGeometry(BAG.hx * 2, BAG.hy * 2, BAG.hz * 2), bagMaterial);
-		meshes.bag.position.set(BAG.x, BAG.topY - BAG.hy, 0);
+		meshes.bag.position.set(bagX, BAG.topY - BAG.hy, 0);
 		scene.add(meshes.bag);
 		bodies.bag = bagBody;
 		bagBodyRef = bagBody;
@@ -35997,6 +36001,12 @@ void main() {
 			},
 			capacity: (kind, structureValue) => zoneCapacity(kind, structureValue === void 0 ? params().targetStructure : structureValue),
 			criticalForce: (kind, structureValue) => zoneCriticalForce(kind, structureValue === void 0 ? params().targetStructure : structureValue),
+			setBagPhase: (phase) => {
+				bagPhase = Math.max(0, phase);
+				build();
+				return bagX;
+			},
+			readBagX: () => bagX,
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
@@ -36320,7 +36330,7 @@ void main() {
 		const leverArm = Math.abs(leverZ(shoulder, point, n));
 		const mArm = leverArm > 1e-4 ? arm.inertia / (leverArm * leverArm) : Infinity;
 		const pivot = {
-			x: BAG.x,
+			x: bagX,
 			y: BAG.topY,
 			z: 0
 		};
