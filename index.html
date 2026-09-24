@@ -34970,6 +34970,7 @@ void main() {
 		lag: .25
 	};
 	var LEG_LEVER = .95;
+	var MUSCLE = { wMax: 15 };
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -35099,6 +35100,7 @@ void main() {
 		active: false,
 		torque: 0,
 		legTorque: 0,
+		armI: .5,
 		rise: .02,
 		elapsed: 0,
 		total: 0
@@ -35597,6 +35599,10 @@ void main() {
 				muscleBase = k;
 				return muscleBase;
 			},
+			setSpeedLimit: (w) => {
+				MUSCLE.wMax = w;
+				return MUSCLE.wMax;
+			},
 			setBalance: (o) => {
 				Object.assign(BALANCE, o);
 				return { ...BALANCE };
@@ -35668,6 +35674,7 @@ void main() {
 		push.active = true;
 		push.torque = p.torque;
 		push.legTorque = p.legForce * LEG_LEVER;
+		push.armI = armModel(p).inertia;
 		push.rise = Math.max(.001, p.rise);
 		push.total = DRIVE.full + push.rise / 2;
 		push.elapsed = 0;
@@ -35766,9 +35773,19 @@ void main() {
 			y: 0,
 			z: 0
 		};
-		const hx = BAG.hx + pad.x, hy = BAG.hy + pad.y, hz = BAG.hz + pad.z;
 		const c = bagCollider.translation();
 		const q = bagCollider.rotation();
+		let padX = pad.x, padY = pad.y;
+		const hand = bodies["forearm_front"];
+		if (hand) {
+			const qh = hand.rotation();
+			const qb = q;
+			const ang = 2 * (Math.atan2(qh.z, qh.w) - Math.atan2(qb.z, qb.w));
+			const cs = Math.cos(ang), sn = Math.sin(ang);
+			padX = Math.abs(cs) * pad.x + Math.abs(sn) * pad.y;
+			padY = Math.abs(sn) * pad.x + Math.abs(cs) * pad.y;
+		}
+		const hx = BAG.hx + padX, hy = BAG.hy + padY, hz = BAG.hz + pad.z;
 		const conj = {
 			x: -q.x,
 			y: -q.y,
@@ -35791,7 +35808,6 @@ void main() {
 			z: b.z - a.z
 		};
 		let tMin = 0, tMax = 1;
-		let faceAxis = 0, faceSign = -1;
 		const axes = [
 			[
 				"x",
@@ -35830,11 +35846,7 @@ void main() {
 				t1 = t2;
 				t2 = tmp;
 			}
-			if (t1 > tMin) {
-				tMin = t1;
-				faceAxis = i;
-				faceSign = dd > 0 ? -1 : 1;
-			}
+			if (t1 > tMin) tMin = t1;
 			if (t2 < tMax) tMax = t2;
 			if (tMin > tMax) return {
 				point: cur,
@@ -35846,17 +35858,31 @@ void main() {
 				}
 			};
 		}
-		const local = {
-			x: a.x + d.x * tMin,
-			y: a.y + d.y * tMin,
-			z: a.z + d.z * tMin
+		const hl = rotateByQuat({
+			x: cur.x - c.x,
+			y: cur.y - c.y,
+			z: cur.z - c.z
+		}, conj);
+		const ratio = [
+			Math.abs(hl.x) / hx,
+			Math.abs(hl.y) / hy,
+			Math.abs(hl.z) / hz
+		];
+		let near = 0;
+		if (ratio[1] > ratio[near]) near = 1;
+		if (ratio[2] > ratio[near]) near = 2;
+		const sign = (near === 0 ? hl.x : near === 1 ? hl.y : hl.z) >= 0 ? 1 : -1;
+		const nLocal = {
+			x: near === 0 ? -sign : 0,
+			y: near === 1 ? -sign : 0,
+			z: near === 2 ? -sign : 0
 		};
-		const normal = rotateByQuat({
-			x: faceAxis === 0 ? faceSign : 0,
-			y: faceAxis === 1 ? faceSign : 0,
-			z: faceAxis === 2 ? faceSign : 0
+		const normal = rotateByQuat(nLocal, q);
+		const back = rotateByQuat({
+			x: near === 0 ? -nLocal.x * hx : hl.x,
+			y: near === 1 ? -nLocal.y * hy : hl.y,
+			z: near === 2 ? -nLocal.z * hz : hl.z
 		}, q);
-		const back = rotateByQuat(local, q);
 		return {
 			point: {
 				x: c.x + back.x,
@@ -35917,7 +35943,15 @@ void main() {
 		if (push.active) {
 			const arm = bodies["upperArm_front"];
 			const k = Math.min(1, push.elapsed / push.rise);
-			const step = push.torque * k * dt;
+			const w = arm ? arm.angvel().z : 0;
+			const wMax = MUSCLE.wMax;
+			const tEff = push.torque * k;
+			let step = 0;
+			if (tEff > 0 && w < wMax) {
+				const decay = Math.exp(-(tEff / (push.armI * wMax)) * dt);
+				const wNext = wMax + (w - wMax) * decay;
+				step = Math.min(tEff * dt, push.armI * (wNext - w));
+			}
 			if (arm) arm.applyTorqueImpulse({
 				x: 0,
 				y: 0,
@@ -35939,10 +35973,13 @@ void main() {
 			const legTorque = push.legTorque * driveShare.ankle;
 			if (legTorque) for (const side of ["front", "back"]) {
 				const shin = bodies["shin_" + side];
-				if (shin) shin.applyTorqueImpulse({
+				if (!shin) continue;
+				const legSpeed = Math.abs(shin.angvel().z);
+				const legLoad = Math.max(0, 1 - legSpeed / MUSCLE.wMax);
+				shin.applyTorqueImpulse({
 					x: 0,
 					y: 0,
-					z: legTorque * k * dt
+					z: legTorque * k * legLoad * dt
 				}, true);
 			}
 			driveImpulse += step;
