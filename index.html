@@ -34994,6 +34994,7 @@ void main() {
 	var stanceX = 0;
 	var targetFromZone = false;
 	var targetMass = BAG.mass;
+	var opponentX = 0;
 	var STRIKE = {
 		restitution: .25,
 		contactMs: 8
@@ -35580,6 +35581,7 @@ void main() {
 		const T = .1;
 		if (bagPhase > 0) bagX = ARM_FRONT_X + (L.upperArm + L.forearm + L.hand) * Math.sin(bagPhase) + BAG.hx;
 		else bagX = BAG.x;
+		bagX += opponentX;
 		const dampLimb = p.structure === void 0 ? .1 : structureOf(p).damping;
 		const bend = Math.max(0, Math.min(p.bend, .9 * Math.min(L.thigh, L.shin)));
 		const aThigh = Math.asin(Math.min(.99, bend / L.thigh));
@@ -36077,6 +36079,18 @@ void main() {
 				return targetMass;
 			},
 			readTargetMass: () => targetMass,
+			stepOpponent: (dx) => {
+				opponentX += dx;
+				build();
+				return opponentX;
+			},
+			setOpponentStep: (x) => {
+				opponentX = x;
+				build();
+				return opponentX;
+			},
+			readOpponentStep: () => opponentX,
+			distance: () => bagX - BAG.hx - (ARM_FRONT_X + stanceX),
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
