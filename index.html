@@ -34994,6 +34994,8 @@ void main() {
 	var stanceX = 0;
 	var targetFromZone = false;
 	var targetMass = BAG.mass;
+	var solidModules = false;
+	var applyAnalytic = true;
 	var opponentX = 0;
 	var STRIKE = {
 		restitution: .25,
@@ -35197,6 +35199,8 @@ void main() {
 		absorbed: 0,
 		energyToZone: 0,
 		energyToHand: 0,
+		impulseRigid: 0,
+		jointLoss: 1,
 		zoneCapacity: 0,
 		zoneCritical: 0,
 		zoneDamage: 0,
@@ -35524,7 +35528,11 @@ void main() {
 		const desc = Og.ColliderDesc.cuboid(hx, hy, hz).setMass(mass).setTranslation(ox || 0, oy || 0, 0).setFriction(o.friction !== void 0 ? o.friction : .7).setRestitution(o.restitution !== void 0 ? o.restitution : .05).setCollisionGroups(o.groups !== void 0 ? o.groups : GROUPS.world);
 		if (o.sensor) desc.setSensor(true);
 		if (o.collisionEvents) desc.setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS);
-		return world.createCollider(desc, body);
+		else desc.setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS);
+		const collider = world.createCollider(desc, body);
+		if (o.module) MODULE_BY_COLLIDER.set(collider.handle, o.module);
+		else if (o.sensor) MODULE_BY_COLLIDER.set(collider.handle, "hand");
+		return collider;
 	}
 	function makeMesh(w, h, d, ox, oy, material) {
 		const geo = new BoxGeometry(w, h, d);
@@ -35541,6 +35549,7 @@ void main() {
 		joints = {};
 		lastHand = null;
 		lastHandVel = null;
+		MODULE_BY_COLLIDER.clear();
 		const p = params();
 		const L = {
 			head: zoneLen("head", 1),
@@ -35640,7 +35649,7 @@ void main() {
 			const handOffset = -(L.forearm + L.hand / 2);
 			const handShape = addBox(fore, T * .7, L.hand / 2, T * .7, 0, handOffset, M.hand, {
 				restitution: .15,
-				sensor: side === "front",
+				sensor: side === "front" && !solidModules,
 				collisionEvents: true,
 				groups: side === "front" ? GROUPS.hand : GROUPS.world
 			});
@@ -35877,6 +35886,8 @@ void main() {
 			leverArm: measure.leverArm,
 			leverBag: measure.leverBag,
 			impulse: measure.impulse,
+			impulseRigid: measure.impulseRigid,
+			jointLoss: measure.jointLoss,
 			impulseCheck: measure.impulseCheck,
 			force: measure.force,
 			peak: measure.peak,
@@ -36078,6 +36089,12 @@ void main() {
 				build();
 				return targetMass;
 			},
+			setContactMode: (mode) => {
+				solidModules = mode === "solver";
+				applyAnalytic = !solidModules;
+				build();
+				return solidModules ? "solver" : "analytic";
+			},
 			readTargetMass: () => targetMass,
 			stepOpponent: (dx) => {
 				opponentX += dx;
@@ -36267,6 +36284,10 @@ void main() {
 			z: t.z + r.z
 		};
 	}
+	var MODULE_BY_COLLIDER = /* @__PURE__ */ new Map();
+	function colliderModule(handle) {
+		return MODULE_BY_COLLIDER.get(handle) || null;
+	}
 	function contactPoint(prev, cur) {
 		if (!bagCollider || !prev) return {
 			point: cur,
@@ -36425,20 +36446,27 @@ void main() {
 		const tt = structureOf({ structure: p.targetStructure });
 		const e = (st.rest + tt.rest) / 2;
 		const contactMs = (st.contactMs + tt.contactMs) / 2;
-		const J = (1 + e) * (mArm * mBag) / (mArm + mBag) * speed;
-		bagBodyRef.applyImpulseAtPoint({
-			x: n.x * J,
-			y: n.y * J,
-			z: n.z * J
-		}, point, true);
-		fore.applyImpulseAtPoint({
-			x: -n.x * J,
-			y: -n.y * J,
-			z: -n.z * J
-		}, point, true);
+		const muscleK = params().muscle * params().stance;
+		const jointLoss = .72 * muscleK / (muscleK + 2500);
+		const J0 = (1 + e) * (mArm * mBag) / (mArm + mBag) * speed;
+		const J = J0 * jointLoss;
+		if (applyAnalytic) {
+			bagBodyRef.applyImpulseAtPoint({
+				x: n.x * J,
+				y: n.y * J,
+				z: n.z * J
+			}, point, true);
+			fore.applyImpulseAtPoint({
+				x: -n.x * J,
+				y: -n.y * J,
+				z: -n.z * J
+			}, point, true);
+		}
 		measure.strikeApplied = true;
 		measure.handSpeed = speed;
 		measure.impulse = J;
+		measure.impulseRigid = J0;
+		measure.jointLoss = jointLoss;
 		measure.force = J / (contactMs / 1e3);
 		measure.peak = measure.force * Math.PI / 2;
 		measure.driveImpulse = driveImpulse;
@@ -36564,6 +36592,13 @@ void main() {
 		eventQueue.drainCollisionEvents((h1, h2, started) => {
 			if (!started || !handCollider || !bagCollider) return;
 			const a = handCollider.handle, b = bagCollider.handle;
+			if (h1 === b || h2 === b) {
+				const which = colliderModule(h1 === b ? h2 : h1);
+				if (which) {
+					measure.contacts = measure.contacts || {};
+					measure.contacts[which] = (measure.contacts[which] || 0) + 1;
+				}
+			}
 			if (!(h1 === a && h2 === b || h1 === b && h2 === a)) return;
 			measure.everContacted = true;
 			if (measure.strikeApplied) return;
