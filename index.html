@@ -68,17 +68,17 @@
   <details id="params" open>
   <summary>Параметры</summary>
   <label>Масса руки <span class="val" id="v-mass">×1.00</span></label>
-  <input type="range" id="mass" min="0.5" max="2.5" step="0.05" value="1" />
+  <input type="range" id="mass" min="0.5" max="2.5" step="0.01" value="1" />
   <label>Длина руки <span class="val" id="v-len">×1.00</span></label>
-  <input type="range" id="len" min="0.7" max="1.5" step="0.02" value="1" />
+  <input type="range" id="len" min="0.7" max="1.5" step="0.01" value="1" />
   <label>Момент в плече, Н·м <span class="val" id="v-torque">60</span></label>
-  <input type="range" id="torque" min="10" max="120" step="5" value="60" />
+  <input type="range" id="torque" min="10" max="120" step="1" value="60" />
   <label>Жёсткость стойки <span class="val" id="v-stiff">×1.00</span></label>
   <input type="range" id="stiffness" min="0.2" max="2" step="0.1" value="1" />
   <label>Сгиб коленей, см <span class="val" id="v-bend">0</span></label>
   <input type="range" id="bend" min="0" max="12" step="1" value="0" />
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
-  <input type="range" id="legs" min="0" max="800" step="25" value="0" />
+  <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
   <input type="range" id="strike-rest" min="0.05" max="0.6" step="0.05" value="0.25" />
   <label>Время контакта, мс <span class="val" id="v-strike-time">8</span></label>
@@ -105,6 +105,16 @@
   </details>
   <button id="punch">Удар</button>
   <button id="series">Серия, 10</button>
+  <label>Тренировка</label>
+  <select id="train-type">
+    <option value="strength">силовые удары</option>
+    <option value="speed">скорость и точность</option>
+    <option value="distance">работа на дистанции</option>
+    <option value="defense">защита и набивка</option>
+    <option value="legs">ноги и опора</option>
+    <option value="endurance">долгая работа</option>
+  </select>
+  <button id="train-5">Пять занятий</button>
   <button id="reset">Сброс</button>
 </div>
 
@@ -35094,6 +35104,8 @@ void main() {
 		rStamina: document.getElementById("r-stamina"),
 		rStaminaLegs: document.getElementById("r-stamina-legs"),
 		series: document.getElementById("series"),
+		trainType: document.getElementById("train-type"),
+		train5: document.getElementById("train-5"),
 		dMass: document.getElementById("d-mass"),
 		dReach: document.getElementById("d-reach"),
 		dInertia: document.getElementById("d-inertia"),
@@ -35327,6 +35339,128 @@ void main() {
 		if (cur >= COND.max) return;
 		const gain = COND.perHit * Math.min(1.5, Math.max(0, load)) * (1 - cur / COND.max);
 		condition[kind] = Math.min(COND.max, cur + gain);
+	}
+	var TRAIN = {
+		strength: {
+			label: "силовые удары",
+			mass: .06,
+			torque: 1.5,
+			structure: 0
+		},
+		speed: {
+			label: "скорость и точность",
+			mass: 0,
+			torque: .8,
+			structure: .04
+		},
+		distance: {
+			label: "работа на дистанции",
+			mass: .01,
+			len: .03,
+			structure: 0
+		},
+		defense: {
+			label: "защита и набивка",
+			mass: .04,
+			structure: -.04
+		},
+		legs: {
+			label: "ноги и опора",
+			legs: 20,
+			torque: .4
+		},
+		endurance: {
+			label: "долгая работа",
+			reserve: .06,
+			torque: -.4
+		}
+	};
+	var TRAIN_CAP = {
+		mass: 2.5,
+		len: 1.5,
+		torque: 120,
+		legs: 800,
+		structure: [0, 1]
+	};
+	var reserve = 1;
+	function trainOnce(type) {
+		const t = TRAIN[type];
+		if (!t) return;
+		const fade = (cur, cap) => Math.max(.15, 1 - cur / cap);
+		if (t.mass) {
+			let v = parseFloat(ui.mass.value);
+			v += t.mass * fade(v, TRAIN_CAP.mass);
+			ui.mass.value = String(Math.min(TRAIN_CAP.mass, v));
+			ui.vMass.textContent = "×" + (+ui.mass.value).toFixed(2);
+		}
+		if (t.len) {
+			let v = parseFloat(ui.len.value);
+			v += t.len * fade(v, TRAIN_CAP.len);
+			ui.len.value = String(Math.min(TRAIN_CAP.len, v));
+			ui.vLen.textContent = "×" + (+ui.len.value).toFixed(2);
+		}
+		if (t.torque) {
+			let v = parseFloat(ui.torque.value);
+			v += t.torque * fade(v, TRAIN_CAP.torque);
+			ui.torque.value = String(Math.max(10, Math.min(TRAIN_CAP.torque, v)));
+			ui.vTorque.textContent = ui.torque.value;
+		}
+		if (t.legs) {
+			let v = parseFloat(ui.legs.value);
+			v += t.legs * fade(v, TRAIN_CAP.legs);
+			ui.legs.value = String(Math.min(TRAIN_CAP.legs, v));
+			ui.vLegs.textContent = ui.legs.value;
+		}
+		if (t.structure) {
+			let v = parseFloat(ui.structure.value) + t.structure;
+			v = Math.max(TRAIN_CAP.structure[0], Math.min(TRAIN_CAP.structure[1], v));
+			ui.structure.value = String(v.toFixed(2));
+			ui.vStructure.textContent = (+ui.structure.value).toFixed(2);
+			const st = structureOf(params());
+			ui.strikeRest.value = st.rest.toFixed(2);
+			ui.strikeTime.value = Math.round(st.contactMs);
+			ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
+			ui.vStrikeTime.textContent = ui.strikeTime.value;
+		}
+		if (t.reserve) reserve = Math.min(2, reserve + t.reserve * (1 - reserve / 2));
+		byTrainZones(type).forEach((k) => trainZone(k, 1.2));
+	}
+	function byTrainZones(type) {
+		if (type === "defense") return [
+			"forearm",
+			"upperArm",
+			"hand"
+		];
+		if (type === "legs") return [
+			"shin",
+			"thigh",
+			"foot"
+		];
+		return [
+			"hand",
+			"forearm",
+			"upperArm"
+		];
+	}
+	function train(type, sessions) {
+		for (let i = 0; i < Math.max(0, sessions | 0); i++) trainOnce(type);
+		build();
+		return bodyState();
+	}
+	function bodyState() {
+		const p = params();
+		return {
+			massMul: p.massMul,
+			lenMul: p.lenMul,
+			torque: p.torque,
+			legForce: p.legForce,
+			structure: p.structure,
+			reserve,
+			conditionHand: zoneCondition("hand"),
+			conditionShin: zoneCondition("shin"),
+			capacityHand: zoneCapacity("hand", p.structure),
+			criticalHand: zoneCriticalForce("hand", p.structure)
+		};
 	}
 	function addDamage(kind, energyJ, structureValue, hasSeam, peakForce) {
 		if (broken[kind]) return;
@@ -35837,6 +35971,29 @@ void main() {
 			setCondition: (kind, value) => {
 				condition[kind] = Math.max(1, Math.min(COND.max, value));
 				return condition[kind];
+			},
+			train,
+			bodyState,
+			readReserve: () => reserve,
+			decay: (sessions) => {
+				const steps = Math.max(0, sessions | 0);
+				for (let i = 0; i < steps; i++) {
+					const drop = (id, base, rate) => {
+						const el = document.getElementById(id);
+						const v = parseFloat(el.value);
+						return Math.max(base, v - (v - base) * rate);
+					};
+					ui.mass.value = String(drop("mass", 1, .01));
+					ui.len.value = String(drop("len", 1, .01));
+					ui.torque.value = String(drop("torque", 60, .012));
+					ui.legs.value = String(drop("legs", 0, .015));
+					const st = parseFloat(ui.structure.value);
+					ui.structure.value = String((st + (.5 - st) * .01).toFixed(3));
+					reserve = Math.max(1, reserve - (reserve - 1) * .008);
+					for (const k of Object.keys(condition)) condition[k] = Math.max(1, condition[k] - (condition[k] - 1) * .01);
+				}
+				build();
+				return bodyState();
 			},
 			capacity: (kind, structureValue) => zoneCapacity(kind, structureValue === void 0 ? params().targetStructure : structureValue),
 			criticalForce: (kind, structureValue) => zoneCriticalForce(kind, structureValue === void 0 ? params().targetStructure : structureValue),
@@ -36464,10 +36621,42 @@ void main() {
 	ui.series.addEventListener("click", () => {
 		seriesRun(10, 3);
 	});
+	ui.train5.addEventListener("click", () => {
+		train(ui.trainType.value, 5);
+		updateDerived();
+		report();
+	});
 	ui.reset.addEventListener("click", () => {
 		resetStamina();
 		resetDamage();
 		resetCondition();
+		for (const [id, v] of Object.entries({
+			mass: 1,
+			len: 1,
+			torque: 60,
+			stiffness: 1,
+			bend: 0,
+			legs: 0,
+			structure: .5,
+			rise: 20
+		})) {
+			const el = document.getElementById(id);
+			el.value = String(v);
+		}
+		ui.vMass.textContent = "×1.00";
+		ui.vLen.textContent = "×1.00";
+		ui.vTorque.textContent = "60";
+		ui.vStiff.textContent = "×1.00";
+		ui.vBend.textContent = "0";
+		ui.vLegs.textContent = "0";
+		ui.vStructure.textContent = "0.50";
+		ui.vRise.textContent = "20";
+		const st = structureOf(params());
+		ui.strikeRest.value = st.rest.toFixed(2);
+		ui.strikeTime.value = Math.round(st.contactMs);
+		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
+		ui.vStrikeTime.textContent = ui.strikeTime.value;
+		reserve = 1;
 		build();
 	});
 	fitCamera();
