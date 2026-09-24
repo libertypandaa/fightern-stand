@@ -35464,6 +35464,36 @@ void main() {
 			criticalHand: zoneCriticalForce("hand", p.structure)
 		};
 	}
+	function fight(opts) {
+		const o = Object.assign({
+			rounds: 3,
+			perRound: 8,
+			rest: 3
+		}, opts || {});
+		const log = [];
+		for (let r = 1; r <= o.rounds; r++) {
+			for (let i = 1; i <= o.perRound; i++) {
+				const m = runPunchSync(2);
+				log.push({
+					round: r,
+					strike: i,
+					impulse: m.impulse,
+					speed: m.handSpeed,
+					peak: m.peak,
+					stamina: m.staminaArm,
+					zoneGauge: m.zoneDamage / Math.max(.01, m.zoneCapacity),
+					handGauge: m.handDamage / Math.max(.01, zoneCapacity("hand", m.structure)),
+					conditionHand: m.conditionHand,
+					zoneBroken: m.zoneBroken,
+					handBroken: m.handBroken,
+					broken: m.zoneBroken || m.handBroken
+				});
+				recoverFor(o.rest);
+			}
+			recoverFor(o.rest * 10);
+		}
+		return log;
+	}
 	function addDamage(kind, energyJ, structureValue, hasSeam, peakForce) {
 		if (broken[kind]) return;
 		const cap = zoneCapacity(kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
@@ -35978,6 +36008,7 @@ void main() {
 			},
 			train,
 			bodyState,
+			fight,
 			readReserve: () => reserve,
 			decay: (sessions) => {
 				const steps = Math.max(0, sessions | 0);
