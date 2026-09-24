@@ -34992,6 +34992,8 @@ void main() {
 	var bagX = BAG.x;
 	var bagPhase = 0;
 	var stanceX = 0;
+	var targetFromZone = false;
+	var targetMass = BAG.mass;
 	var STRIKE = {
 		restitution: .25,
 		contactMs: 8
@@ -35272,7 +35274,8 @@ void main() {
 		};
 	}
 	function bagInertia() {
-		return BAG.mass * (BAG.hx * BAG.hx + BAG.hy * BAG.hy) / 3 + BAG.mass * BAG.hy * BAG.hy;
+		const m = targetMass;
+		return m * (BAG.hx * BAG.hx + BAG.hy * BAG.hy) / 3 + m * BAG.hy * BAG.hy;
 	}
 	function rotateByQuat(v, q) {
 		const tx = 2 * (q.y * v.z - q.z * v.y);
@@ -35744,7 +35747,8 @@ void main() {
 		}
 		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(bagX, BAG.topY, 0));
 		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(bagX, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
-		bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, BAG.mass, {
+		targetMass = targetFromZone ? ZONE[p.zone].frac * BODY_MASS * (PAIRED_ZONES.includes(p.zone) ? 2 : 1) : BAG.mass;
+		bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, targetMass, {
 			friction: .8,
 			restitution: .2,
 			collisionEvents: true,
@@ -36067,6 +36071,12 @@ void main() {
 				return stanceX;
 			},
 			readStance: () => stanceX,
+			setTargetFromZone: (on) => {
+				targetFromZone = !!on;
+				build();
+				return targetMass;
+			},
+			readTargetMass: () => targetMass,
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
