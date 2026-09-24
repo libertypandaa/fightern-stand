@@ -35042,7 +35042,7 @@ void main() {
 		legs: 1
 	};
 	var DAMAGE = {
-		total: 200,
+		total: 1e3,
 		decayPerSec: .03,
 		seamMul: 1.5,
 		seamBrittle: .6
@@ -35054,7 +35054,8 @@ void main() {
 	};
 	var COND = {
 		max: 2.2,
-		perHit: .05,
+		perHit: .002,
+		perSession: .02,
 		gain: 1.5,
 		capacityGain: .5
 	};
@@ -35336,10 +35337,10 @@ void main() {
 	function zoneCondition(kind) {
 		return condition[kind] === void 0 ? 1 : condition[kind];
 	}
-	function trainZone(kind, load) {
+	function trainZone(kind, load, per) {
 		const cur = zoneCondition(kind);
 		if (cur >= COND.max) return;
-		const gain = COND.perHit * Math.min(1.5, Math.max(0, load)) * (1 - cur / COND.max);
+		const gain = (per === void 0 ? COND.perHit : COND.perSession) * Math.min(1.5, Math.max(0, load)) * (1 - cur / COND.max);
 		condition[kind] = Math.min(COND.max, cur + gain);
 	}
 	var TRAIN = {
@@ -35425,7 +35426,7 @@ void main() {
 			ui.vStrikeTime.textContent = ui.strikeTime.value;
 		}
 		if (t.reserve) reserve = Math.min(2, reserve + t.reserve * (1 - reserve / 2));
-		byTrainZones(type).forEach((k) => trainZone(k, 1.2));
+		byTrainZones(type).forEach((k) => trainZone(k, 1.2, "session"));
 	}
 	function byTrainZones(type) {
 		if (type === "defense") return [
