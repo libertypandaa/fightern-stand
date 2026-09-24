@@ -77,6 +77,8 @@
   <input type="range" id="stiffness" min="0.2" max="2" step="0.1" value="1" />
   <label>Сгиб коленей, см <span class="val" id="v-bend">0</span></label>
   <input type="range" id="bend" min="0" max="12" step="1" value="0" />
+  <label>Шаг вперёд, см <span class="val" id="v-step">0</span></label>
+  <input type="range" id="step-x" min="-20" max="40" step="1" value="0" />
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
@@ -34989,6 +34991,7 @@ void main() {
 	};
 	var bagX = BAG.x;
 	var bagPhase = 0;
+	var stanceX = 0;
 	var STRIKE = {
 		restitution: .25,
 		contactMs: 8
@@ -35073,6 +35076,7 @@ void main() {
 		torque: document.getElementById("torque"),
 		stiffness: document.getElementById("stiffness"),
 		bend: document.getElementById("bend"),
+		stepX: document.getElementById("step-x"),
 		legs: document.getElementById("legs"),
 		targetStructure: document.getElementById("target-structure"),
 		zone: document.getElementById("zone"),
@@ -35086,6 +35090,7 @@ void main() {
 		vTorque: document.getElementById("v-torque"),
 		vStiff: document.getElementById("v-stiff"),
 		vBend: document.getElementById("v-bend"),
+		vStep: document.getElementById("v-step"),
 		vLegs: document.getElementById("v-legs"),
 		vStrikeRest: document.getElementById("v-strike-rest"),
 		vStrikeTime: document.getElementById("v-strike-time"),
@@ -35766,6 +35771,18 @@ void main() {
 		bodies.bag = bagBody;
 		bagBodyRef = bagBody;
 		bodyStartX = abdomen.translation().x;
+		if (stanceX) {
+			for (const b of Object.values(bodies)) {
+				if (!b || b === bagBodyRef) continue;
+				const t = b.translation();
+				b.setTranslation({
+					x: t.x + stanceX,
+					y: t.y,
+					z: t.z
+				}, false);
+			}
+			bodyStartX += stanceX;
+		}
 		comRef = bodyComX();
 		comPrev = comRef;
 		balErr = 0;
@@ -36039,6 +36056,17 @@ void main() {
 				return bagX;
 			},
 			readBagX: () => bagX,
+			stepFighter: (dx) => {
+				stanceX += dx;
+				build();
+				return stanceX;
+			},
+			setStance: (x) => {
+				stanceX = x;
+				build();
+				return stanceX;
+			},
+			readStance: () => stanceX,
 			probe: physicsProbe,
 			step: (seconds) => {
 				const n = Math.max(0, Math.round((seconds || 0) / world.timestep));
@@ -36628,6 +36656,11 @@ void main() {
 	});
 	ui.bend.addEventListener("input", () => {
 		ui.vBend.textContent = ui.bend.value;
+		build();
+	});
+	ui.stepX.addEventListener("input", () => {
+		ui.vStep.textContent = ui.stepX.value;
+		stanceX = parseFloat(ui.stepX.value) / 100;
 		build();
 	});
 	ui.legs.addEventListener("input", () => {
