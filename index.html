@@ -134,6 +134,8 @@
   <div class="row"><span class="dim">Урон за удар</span><b id="d-hitenergy">—</b></div>
   <div class="row"><span class="dim">Шкала зоны цели</span><b id="d-zonedamage">—</b></div>
   <div class="row"><span class="dim">Шкала своей кисти</span><b id="d-handdamage">—</b></div>
+  <div class="row"><span class="dim">Набитость кисти</span><b id="d-handcond">×1.00</b></div>
+  <div class="row"><span class="dim">Набитость зоны цели</span><b id="d-zonecond">×1.00</b></div>
 </div>
 
 <div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
@@ -35038,6 +35040,13 @@ void main() {
 		massRef: .081,
 		crystalMul: .45
 	};
+	var COND = {
+		max: 2.2,
+		perHit: .05,
+		gain: 1.5,
+		capacityGain: .5
+	};
+	var condition = {};
 	var damage = {};
 	var broken = {};
 	var GROUPS = {
@@ -35095,7 +35104,9 @@ void main() {
 		dCapacity: document.getElementById("d-capacity"),
 		dHitEnergy: document.getElementById("d-hitenergy"),
 		dZoneDamage: document.getElementById("d-zonedamage"),
-		dHandDamage: document.getElementById("d-handdamage")
+		dHandDamage: document.getElementById("d-handdamage"),
+		dHandCond: document.getElementById("d-handcond"),
+		dZoneCond: document.getElementById("d-zonecond")
 	};
 	var renderer = new WebGLRenderer({ antialias: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -35169,6 +35180,8 @@ void main() {
 		handDamage: 0,
 		zoneBroken: false,
 		handBroken: false,
+		conditionZone: 1,
+		conditionHand: 1,
 		mArm: 0,
 		mBag: 0,
 		leverArm: 0,
@@ -35288,7 +35301,8 @@ void main() {
 		const mass = ZONE[kind].frac * BODY_MASS;
 		const tough = structureOf({ structure: structureValue }).strength;
 		const pair = PAIRED_ZONES.includes(kind) ? 2 : 1;
-		return DAMAGE.total * (mass / BODY_MASS) * tough * pair;
+		const trained = 1 + COND.capacityGain * (zoneCondition(kind) - 1);
+		return DAMAGE.total * (mass / BODY_MASS) * tough * pair * trained;
 	}
 	var PAIRED_ZONES = [
 		"upperArm",
@@ -35302,7 +35316,17 @@ void main() {
 		const frac = ZONE[kind].frac * (PAIRED_ZONES.includes(kind) ? 2 : 1);
 		const ratio = Math.pow(frac / CRIT.massRef, 2 / 3);
 		const brittle = 1 - (1 - CRIT.crystalMul) * structureValue;
-		return CRIT.headRef * ratio * brittle;
+		const trained = 1 + COND.gain * (zoneCondition(kind) - 1);
+		return CRIT.headRef * ratio * brittle * trained;
+	}
+	function zoneCondition(kind) {
+		return condition[kind] === void 0 ? 1 : condition[kind];
+	}
+	function trainZone(kind, load) {
+		const cur = zoneCondition(kind);
+		if (cur >= COND.max) return;
+		const gain = COND.perHit * Math.min(1.5, Math.max(0, load)) * (1 - cur / COND.max);
+		condition[kind] = Math.min(COND.max, cur + gain);
 	}
 	function addDamage(kind, energyJ, structureValue, hasSeam, peakForce) {
 		if (broken[kind]) return;
@@ -35605,6 +35629,8 @@ void main() {
 		measure.handDamage = 0;
 		measure.zoneBroken = false;
 		measure.handBroken = false;
+		measure.conditionZone = 1;
+		measure.conditionHand = 1;
 		measure.checkPending = 0;
 		measure.contactT = 0;
 		measure.contactAt = null;
@@ -35690,6 +35716,8 @@ void main() {
 				forearm: 0,
 				hand: 0
 			},
+			conditionZone: measure.conditionZone,
+			conditionHand: measure.conditionHand,
 			zoneBroken: measure.zoneBroken,
 			handBroken: measure.handBroken,
 			contactY: measure.contactAt ? measure.contactAt.y : 0,
@@ -35744,6 +35772,9 @@ void main() {
 	function resetDamage() {
 		for (const k of Object.keys(damage)) delete damage[k];
 		for (const k of Object.keys(broken)) delete broken[k];
+	}
+	function resetCondition() {
+		for (const k of Object.keys(condition)) delete condition[k];
 	}
 	function exposeDiagnostics() {
 		function physicsProbe() {
@@ -35800,6 +35831,13 @@ void main() {
 				broken: { ...broken }
 			}),
 			resetDamage,
+			readCondition: () => ({ ...condition }),
+			resetCondition,
+			condition: (kind) => zoneCondition(kind),
+			setCondition: (kind, value) => {
+				condition[kind] = Math.max(1, Math.min(COND.max, value));
+				return condition[kind];
+			},
 			capacity: (kind, structureValue) => zoneCapacity(kind, structureValue === void 0 ? params().targetStructure : structureValue),
 			criticalForce: (kind, structureValue) => zoneCriticalForce(kind, structureValue === void 0 ? params().targetStructure : structureValue),
 			probe: physicsProbe,
@@ -36172,7 +36210,12 @@ void main() {
 			"hand"
 		];
 		const armMassTotal = armZones.reduce((a, k) => a + ZONE[k].frac * BODY_MASS, 0);
-		for (const k of armZones) addDamage(k, energyToHand * (ZONE[k].frac * BODY_MASS / armMassTotal), p.structure, false, measure.peak);
+		for (const k of armZones) {
+			const part = ZONE[k].frac * BODY_MASS / armMassTotal;
+			addDamage(k, energyToHand * part, p.structure, false, measure.peak);
+			trainZone(k, energyToHand * part / Math.max(.01, zoneCapacity(k, p.structure)));
+		}
+		trainZone(p.zone, energyToZone / Math.max(.01, zoneCapacity(p.zone, p.targetStructure)) * .5);
 		measure.absorbed = absorbed;
 		measure.energyToZone = energyToZone;
 		measure.energyToHand = energyToHand;
@@ -36185,6 +36228,8 @@ void main() {
 			forearm: damage.forearm || 0,
 			hand: damage.hand || 0
 		};
+		measure.conditionZone = zoneCondition(p.zone);
+		measure.conditionHand = zoneCondition("hand");
 		measure.zoneBroken = !!broken[p.zone];
 		measure.handBroken = !!broken.hand;
 		measure.mArm = mArm;
@@ -36335,6 +36380,8 @@ void main() {
 		ui.dZoneDamage.textContent = Math.round(Math.min(100, measure.zoneDamage / cap * 100)) + "%" + (measure.zoneBroken ? " — отломана" : "");
 		const handCap = Math.max(.01, zoneCapacity("hand", params().structure));
 		ui.dHandDamage.textContent = Math.round(Math.min(100, measure.handDamage / handCap * 100)) + "%" + (measure.handBroken ? " — отломана" : "");
+		ui.dHandCond.textContent = "×" + zoneCondition("hand").toFixed(2);
+		ui.dZoneCond.textContent = "×" + zoneCondition(params().zone).toFixed(2);
 	}
 	function sync() {
 		for (const key of Object.keys(meshes)) {
@@ -36420,6 +36467,7 @@ void main() {
 	ui.reset.addEventListener("click", () => {
 		resetStamina();
 		resetDamage();
+		resetCondition();
 		build();
 	});
 	fitCamera();
