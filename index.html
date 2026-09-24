@@ -35019,6 +35019,11 @@ void main() {
 		limit: 260,
 		lag: .25
 	};
+	var SWAY = {
+		amp: .02,
+		freq: .7
+	};
+	var simTime = 0;
 	var LEG_LEVER = .95;
 	var STRUCTURE = {
 		rest: [.25, .3],
@@ -35045,10 +35050,6 @@ void main() {
 		ref: 120,
 		legRef: 1300
 	};
-	var stamina = {
-		arm: 1,
-		legs: 1
-	};
 	var DAMAGE = {
 		total: 1e3,
 		decayPerSec: .03,
@@ -35067,9 +35068,25 @@ void main() {
 		gain: 1.5,
 		capacityGain: .5
 	};
-	var condition = {};
-	var damage = {};
-	var broken = {};
+	function makeFighter(id) {
+		return {
+			id,
+			stamina: {
+				arm: 1,
+				legs: 1
+			},
+			damage: {},
+			broken: {},
+			condition: {},
+			reserve: 1
+		};
+	}
+	var P1 = makeFighter("p1");
+	var P2 = makeFighter("p2");
+	var condition = P1.condition;
+	var damage = P1.damage;
+	var broken = P1.broken;
+	var stamina = P1.stamina;
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -35207,6 +35224,7 @@ void main() {
 		handDamage: 0,
 		zoneBroken: false,
 		handBroken: false,
+		balanceWork: 0,
 		conditionZone: 1,
 		conditionHand: 1,
 		mArm: 0,
@@ -35243,6 +35261,7 @@ void main() {
 	var jointContactsOn = false;
 	var comRef = 0;
 	var comPrev = 0;
+	var balanceWork = 0;
 	var balErr = 0;
 	var balVel = 0;
 	var muscleBase = 6e3;
@@ -35830,6 +35849,7 @@ void main() {
 		measure.handDamage = 0;
 		measure.zoneBroken = false;
 		measure.handBroken = false;
+		measure.balanceWork = 0;
 		measure.conditionZone = 1;
 		measure.conditionHand = 1;
 		measure.checkPending = 0;
@@ -35919,6 +35939,7 @@ void main() {
 				forearm: 0,
 				hand: 0
 			},
+			balanceWork,
 			conditionZone: measure.conditionZone,
 			conditionHand: measure.conditionHand,
 			zoneBroken: measure.zoneBroken,
@@ -35967,10 +35988,8 @@ void main() {
 		report();
 	}
 	function resetStamina() {
-		stamina = {
-			arm: 1,
-			legs: 1
-		};
+		stamina.arm = 1;
+		stamina.legs = 1;
 	}
 	function resetDamage() {
 		for (const k of Object.keys(damage)) delete damage[k];
@@ -36022,10 +36041,8 @@ void main() {
 			series: runSeries,
 			readStamina: () => ({ ...stamina }),
 			setStamina: (v) => {
-				stamina = {
-					arm: v,
-					legs: v
-				};
+				stamina.arm = v;
+				stamina.legs = v;
 				return { ...stamina };
 			},
 			resetStamina,
@@ -36044,6 +36061,10 @@ void main() {
 			train,
 			bodyState,
 			fight,
+			fighters: {
+				p1: P1,
+				p2: P2
+			},
 			readReserve: () => reserve,
 			decay: (sessions) => {
 				const steps = Math.max(0, sessions | 0);
@@ -36222,7 +36243,10 @@ void main() {
 	}
 	function balanceStep(dt) {
 		const com = bodyComX();
-		const err = com - comRef;
+		const sway = SWAY.amp * Math.sin(2 * Math.PI * SWAY.freq * simTime);
+		const err = com - (comRef + sway);
+		measure.sway = sway;
+		measure.swayVel = SWAY.amp * 2 * Math.PI * SWAY.freq * Math.cos(2 * Math.PI * SWAY.freq * simTime);
 		const a = BALANCE.lag > 0 ? dt / (BALANCE.lag + dt) : 1;
 		balErr += (err - balErr) * a;
 		balVel += ((dt > 0 ? (com - comPrev) / dt : 0) - balVel) * a;
@@ -36232,11 +36256,13 @@ void main() {
 		if (torque < -BALANCE.limit) torque = -BALANCE.limit;
 		for (const side of ["front", "back"]) {
 			const shin = bodies["shin_" + side];
-			if (shin) shin.applyTorqueImpulse({
+			if (!shin) continue;
+			shin.applyTorqueImpulse({
 				x: 0,
 				y: 0,
 				z: torque * dt
 			}, true);
+			balanceWork += Math.abs(torque * shin.angvel().z) * dt;
 		}
 	}
 	function settle(seconds) {
@@ -36521,6 +36547,7 @@ void main() {
 	function stepPhysics() {
 		const dt = world.timestep;
 		sincePunch += dt;
+		simTime += dt;
 		if (push.active) {
 			const arm = bodies["upperArm_front"];
 			const k = Math.min(1, push.elapsed / push.rise);
