@@ -35149,6 +35149,10 @@ void main() {
 		rail: .005,
 		arm: .5,
 		armDamp: .004,
+		kVel: 420,
+		kPos: 260,
+		tLimit: 160,
+		harness: false,
 		maxSpeed: 1.2
 	};
 	var VIRTUAL = {
@@ -35735,8 +35739,8 @@ void main() {
 		world.numSolverIterations = SOLVER_ITERATIONS;
 		eventQueue = new Og.EventQueue(true);
 		const ground = world.createRigidBody(Og.RigidBodyDesc.fixed());
-		groundCollider = world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setTranslation(0, -.05, 0).setFriction(1).setCollisionGroups(GROUPS.world).setActiveEvents(Og.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(1), ground);
-		const groundMesh = new Mesh(new BoxGeometry(16, .1, 1), matGround);
+		groundCollider = world.createCollider(Og.ColliderDesc.cuboid(30, .05, 1).setTranslation(0, -.05, 0).setFriction(1).setCollisionGroups(GROUPS.world).setActiveEvents(Og.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(1), ground);
+		const groundMesh = new Mesh(new BoxGeometry(60, .1, 1), matGround);
 		groundMesh.position.set(0, -.05, 0);
 		scene.add(groundMesh);
 		sceneMeshes.push(groundMesh);
@@ -36443,6 +36447,7 @@ void main() {
 						back: 0
 					} },
 					support: f.gait.support || 0,
+					vel: f.gait.vel || 0,
 					angles: f.gait.debug ? { ...f.gait.debug } : null,
 					place: f.place.x,
 					footFront: at(f.bodies.foot_front),
@@ -36953,8 +36958,22 @@ void main() {
 		const kd = BALANCE.kd;
 		const limit = BALANCE.limit;
 		let torque = kp * bal.err + kd * bal.vel;
-		if (torque > limit) torque = limit;
-		if (torque < -limit) torque = -limit;
+		if (walking) {
+			const g = f.gait;
+			if (g.lastCom === void 0) {
+				g.lastCom = com;
+				g.vel = 0;
+			}
+			const rawVel = dt > 0 ? (com - g.lastCom) / dt : 0;
+			g.vel += (rawVel - g.vel) * .15;
+			g.lastCom = com;
+			const want = g.v * (f.place.turn ? -1 : 1);
+			const supportX = g.support || com;
+			torque = -(GAIT.kVel * (want - g.vel) + GAIT.kPos * (supportX - com));
+		}
+		const cap = walking ? GAIT.tLimit : limit;
+		if (torque > cap) torque = cap;
+		if (torque < -cap) torque = -cap;
 		for (const side of ["front", "back"]) {
 			const shin = f.bodies["shin_" + side];
 			if (!shin) continue;
@@ -37570,7 +37589,7 @@ void main() {
 				z: w.z * (1 - GAIT.armDamp)
 			}, true);
 		}
-		if (f.pose) for (const key of [
+		if (GAIT.harness && f.pose) for (const key of [
 			"abdomen",
 			"chest",
 			"head"
