@@ -37,6 +37,27 @@
   /* На низких экранах подпись не помещается между панелями — убираем её. */
   @media (max-height: 900px) { #hint { display: none; } }
   .dim { color: #7c8598; }
+
+  /* Джойстик: тянем за шайбу, боец идёт. */
+  #stick {
+    position: fixed; left: 50%; bottom: 18px; margin-left: -65px; width: 130px; height: 130px;
+    border-radius: 50%; background: rgba(20,24,31,.72); border: 1px solid #2c323d;
+    box-shadow: inset 0 0 22px rgba(0,0,0,.45); touch-action: none; z-index: 6;
+  }
+  #stick-knob {
+    position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px;
+    border-radius: 50%; background: #3a4356; border: 1px solid #5a6685;
+    box-shadow: 0 2px 8px rgba(0,0,0,.5); pointer-events: none;
+  }
+  #stick-label {
+    position: fixed; left: 50%; bottom: 152px; margin-left: -65px; width: 130px; text-align: center;
+    color: #7c8598; font-size: 11px; pointer-events: none; z-index: 6;
+  }
+  @media (max-width: 780px), (orientation: portrait) {
+    #stick { width: 96px; height: 96px; margin-left: -48px; bottom: calc(50vh + 12px); }
+    #stick-knob { width: 40px; height: 40px; margin: -20px 0 0 -20px; }
+    #stick-label { bottom: auto; top: calc(50vh + 112px); width: 96px; margin-left: -48px; font-size: 10px; }
+  }
   summary {
     cursor: pointer; list-style: none; font-size: 11px; letter-spacing: .08em;
     text-transform: uppercase; color: #8b95a7; margin: 0 0 8px;
@@ -88,9 +109,9 @@
   <label><input type="checkbox" id="free-feet" /> первый боец на якоре (для старых замеров)</label>
   <label><input type="checkbox" id="free-feet-2" /> второй боец на якоре</label>
   <label>Движение первого, м/с <span class="val" id="v-move1">0.00</span></label>
-  <input type="range" id="move1" min="-0.8" max="0.8" step="0.05" value="0" />
+  <input type="range" id="move1" min="-0.9" max="0.9" step="0.05" value="0" />
   <label>Движение второго, м/с <span class="val" id="v-move2">0.00</span></label>
-  <input type="range" id="move2" min="-0.8" max="0.8" step="0.05" value="0" />
+  <input type="range" id="move2" min="-0.9" max="0.9" step="0.05" value="0" />
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
@@ -174,6 +195,9 @@
 </div>
 
 <div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Бойцов двое: второй стоит напротив, развёрнутый, со своим равновесием и своим шагом. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
+
+<div id="stick"><div id="stick-knob"></div></div>
+<div id="stick-label">джойстик: тяни в сторону</div>
 
 <script>
 (function() {
@@ -38354,11 +38378,61 @@ void main() {
 	ui.move1.addEventListener("input", () => {
 		ui.vMove1.textContent = (+ui.move1.value).toFixed(2);
 		P1.gait.v = Math.max(-GAIT.maxSpeed, Math.min(GAIT.maxSpeed, parseFloat(ui.move1.value)));
+		syncStick();
 	});
 	ui.move2.addEventListener("input", () => {
 		ui.vMove2.textContent = (+ui.move2.value).toFixed(2);
 		P2.gait.v = Math.max(-GAIT.maxSpeed, Math.min(GAIT.maxSpeed, parseFloat(ui.move2.value)));
 	});
+	var stick = {
+		pad: document.getElementById("stick"),
+		knob: document.getElementById("stick-knob"),
+		active: false
+	};
+	var STICK_FULL = .75;
+	function stickSet(nx) {
+		const v = Math.max(-1, Math.min(1, nx)) * GAIT.maxSpeed * STICK_FULL;
+		P1.gait.v = v;
+		if (stick.knob) {
+			const r = stick.pad.getBoundingClientRect();
+			const reach = Math.max(10, r.width / 2 - 27 * (r.width / 130));
+			stick.knob.style.transform = "translate(" + (nx * reach).toFixed(1) + "px, 0px)";
+		}
+		ui.move1.value = v.toFixed(2);
+		ui.vMove1.textContent = v.toFixed(2);
+	}
+	function syncStick() {
+		if (!stick.knob) return;
+		const v = P1.gait.v;
+		const nx = Math.max(-1, Math.min(1, v / (GAIT.maxSpeed * STICK_FULL)));
+		const r = stick.pad.getBoundingClientRect();
+		const reach = Math.max(10, r.width / 2 - 27 * (r.width / 130));
+		stick.knob.style.transform = "translate(" + (nx * reach).toFixed(1) + "px, 0px)";
+	}
+	function stickFromEvent(ev) {
+		const r = stick.pad.getBoundingClientRect();
+		const cx = r.left + r.width / 2;
+		stickSet((ev.clientX - cx) / (r.width / 2));
+	}
+	if (stick.pad) {
+		stick.pad.addEventListener("pointerdown", (ev) => {
+			stick.active = true;
+			try {
+				stick.pad.setPointerCapture(ev.pointerId);
+			} catch (e) {}
+			stickFromEvent(ev);
+		});
+		stick.pad.addEventListener("pointermove", (ev) => {
+			if (stick.active) stickFromEvent(ev);
+		});
+		const release = () => {
+			stick.active = false;
+			stickSet(0);
+		};
+		stick.pad.addEventListener("pointerup", release);
+		stick.pad.addEventListener("pointercancel", release);
+		stick.pad.addEventListener("lostpointercapture", release);
+	}
 	ui.reset.addEventListener("click", () => {
 		P1.gait.v = 0;
 		P2.gait.v = 0;
@@ -38366,6 +38440,7 @@ void main() {
 		ui.move2.value = "0";
 		ui.vMove1.textContent = "0.00";
 		ui.vMove2.textContent = "0.00";
+		syncStick();
 	});
 	ui.clinch.addEventListener("click", () => {
 		if (!ui.contact.checked) {
