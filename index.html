@@ -62,6 +62,13 @@
   }
   #toggle-params { left: 10px; top: 10px; }
   #toggle-readout { right: 10px; top: 10px; }
+  /* Верхняя полоса: то, что нужно в любую минуту — оппонент и начать сначала. */
+  #topbar {
+    position: fixed; left: 50%; top: 10px; transform: translateX(-50%);
+    display: flex; gap: 8px; z-index: 8;
+  }
+  #topbar .pill { position: static; display: block; white-space: nowrap; }
+  @media (max-width: 560px) { #topbar { top: 58px; } }
   #punch-mobile {
     right: 18px; bottom: 22px; width: 132px; height: 76px; padding: 0;
     display: none; align-items: center; justify-content: center;
@@ -256,6 +263,10 @@
 <div class="pill" id="toggle-params">параметры</div>
 <div class="pill" id="toggle-readout">замеры</div>
 <div class="pill" id="punch-mobile">Удар</div>
+<div id="topbar">
+  <div class="pill" id="toggle-opponent">оппонент: есть</div>
+  <div class="pill" id="restart">начать сначала</div>
+</div>
 
 <script>
 (function() {
@@ -38418,6 +38429,7 @@ void main() {
 		secondFighter = ui.second.checked;
 		build();
 		fitCamera();
+		updateOpponentPill();
 	});
 	ui.contact.addEventListener("change", () => {
 		const on = !ui.contact.checked;
@@ -38594,10 +38606,30 @@ void main() {
 		updateDerived();
 		report();
 	});
-	ui.reset.addEventListener("click", () => {
+	function restartStand() {
 		resetStamina();
 		resetDamage();
 		resetCondition();
+		reserve = 1;
+		P1.gait.v = 0;
+		P2.gait.v = 0;
+		P1.gait.phase = 0;
+		P2.gait.phase = 0;
+		P1.freeFeet = true;
+		P2.freeFeet = true;
+		p2Params = null;
+		guard = null;
+		press = null;
+		secondFighter = true;
+		bagHidden = true;
+		oppContact = true;
+		solidModules = true;
+		applyAnalytic = false;
+		targetFromZone = false;
+		opponentX = 0;
+		bagPhase = 0;
+		stanceX = 0;
+		secondX = SECOND_X;
 		for (const [id, v] of Object.entries({
 			mass: 1,
 			len: 1,
@@ -38606,10 +38638,15 @@ void main() {
 			bend: 0,
 			legs: 0,
 			structure: .5,
-			rise: 20
+			rise: 20,
+			"strike-rest": .25,
+			"strike-time": 8,
+			"step-x": 0,
+			"step-2": 0,
+			"target-structure": .5
 		})) {
 			const el = document.getElementById(id);
-			el.value = String(v);
+			if (el) el.value = String(v);
 		}
 		ui.vMass.textContent = "×1.00";
 		ui.vLen.textContent = "×1.00";
@@ -38619,13 +38656,44 @@ void main() {
 		ui.vLegs.textContent = "0";
 		ui.vStructure.textContent = "0.50";
 		ui.vRise.textContent = "20";
+		ui.vStep.textContent = "0";
+		ui.vStep2.textContent = "0";
+		ui.vTargetStructure.textContent = "0.50";
 		const st = structureOf(params());
 		ui.strikeRest.value = st.rest.toFixed(2);
 		ui.strikeTime.value = Math.round(st.contactMs);
 		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
 		ui.vStrikeTime.textContent = ui.strikeTime.value;
-		reserve = 1;
+		ui.second.checked = true;
+		ui.contact.checked = false;
+		ui.guard.checked = false;
+		ui.secondBody.checked = false;
+		ui.freeFeet.checked = false;
+		ui.freeFeet2.checked = false;
+		ui.move1.value = "0";
+		ui.move2.value = "0";
+		ui.vMove1.textContent = "0.00";
+		ui.vMove2.textContent = "0.00";
+		stickSet(0);
+		document.body.classList.remove("show-params", "show-readout");
 		build();
+		fitCamera();
+		updateOpponentPill();
+	}
+	function updateOpponentPill() {
+		const el = document.getElementById("toggle-opponent");
+		if (el) el.textContent = secondFighter ? "оппонент: есть" : "оппонент: нет";
+	}
+	ui.reset.addEventListener("click", restartStand);
+	var restartPill = document.getElementById("restart");
+	if (restartPill) restartPill.addEventListener("click", restartStand);
+	var opponentPill = document.getElementById("toggle-opponent");
+	if (opponentPill) opponentPill.addEventListener("click", () => {
+		secondFighter = !secondFighter;
+		ui.second.checked = secondFighter;
+		build();
+		fitCamera();
+		updateOpponentPill();
 	});
 	fitCamera();
 	Og.init().then(() => {
