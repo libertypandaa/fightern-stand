@@ -84,6 +84,7 @@
   <label><input type="checkbox" id="second" checked /> второй боец напротив</label>
   <label><input type="checkbox" id="contact" /> цель — второй боец, без груши</label>
   <label><input type="checkbox" id="guard" /> второй держит блок</label>
+  <label><input type="checkbox" id="second-body" /> второй боец — своё тело (тяжёлое и вязкое)</label>
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
@@ -35125,6 +35126,15 @@ void main() {
 		x: SECOND_X,
 		turn: Math.PI
 	}, Math.PI / 2);
+	var p2Params = null;
+	function fighterParams(f) {
+		const base = params();
+		if (f === P2 && p2Params) return {
+			...base,
+			...p2Params
+		};
+		return base;
+	}
 	var condition = P1.condition;
 	var damage = P1.damage;
 	var broken = P1.broken;
@@ -35150,6 +35160,7 @@ void main() {
 		second: document.getElementById("second"),
 		contact: document.getElementById("contact"),
 		guard: document.getElementById("guard"),
+		secondBody: document.getElementById("second-body"),
 		clinch: document.getElementById("clinch"),
 		legs: document.getElementById("legs"),
 		targetStructure: document.getElementById("target-structure"),
@@ -35745,7 +35756,6 @@ void main() {
 			meshes.bag.position.set(bagX, BAG.topY - BAG.hy, 0);
 			scene.add(meshes.bag);
 			sceneMeshes.push(meshes.bag);
-			bodies.bag = bagBody;
 			bagBodyRef = bagBody;
 		}
 		applyPose(guard);
@@ -35762,7 +35772,7 @@ void main() {
 		exposeDiagnostics();
 	}
 	function buildBody(f, opts) {
-		const p = params();
+		const p = fighterParams(f);
 		const X = f.place.x;
 		const turn = !!f.place.turn;
 		const bodiesF = f.bodies;
@@ -36292,6 +36302,50 @@ void main() {
 				return secondX;
 			},
 			readSecondStep: () => secondX,
+			setFighterParams: (id, obj) => {
+				if (id === "p2") {
+					p2Params = obj ? {
+						...p2Params || {},
+						...obj
+					} : null;
+					build();
+					return p2Params;
+				}
+				if (obj) for (const [k, v] of Object.entries(obj)) {
+					const el = document.getElementById(k === "massMul" ? "mass" : k === "lenMul" ? "len" : k);
+					if (el) {
+						el.value = String(v);
+						el.dispatchEvent(new Event("input", { bubbles: true }));
+					}
+				}
+				build();
+				return params();
+			},
+			readFighterParams: (id) => id === "p2" ? { ...fighterParams(P2) } : { ...params() },
+			bodyOf: (id) => {
+				const f = id === "p2" ? P2 : P1;
+				const p = fighterParams(f);
+				const a = armModel(p);
+				const body = f.bodies["forearm_front"] || f.bodies.chest;
+				body && body.translation();
+				const head = f.bodies.head ? f.bodies.head.translation() : null;
+				const foot = f.bodies.foot_front ? f.bodies.foot_front.translation() : null;
+				return {
+					massMul: p.massMul,
+					lenMul: p.lenMul,
+					structure: p.structure,
+					muscle: p.muscle,
+					torque: p.torque,
+					armMass: a.total,
+					reach: a.LU + a.LF + a.LH,
+					inertia: a.inertia,
+					headY: head ? head.y : 0,
+					height: head && foot ? head.y - foot.y : 0,
+					place: f.place.x,
+					armThickness: a.total / Math.max(.05, a.LU + a.LF + a.LH),
+					present: activeFighters().includes(f)
+				};
+			},
 			setContactTarget: (mode) => {
 				const on = mode === "opponent";
 				bagHidden = on;
@@ -37121,7 +37175,7 @@ void main() {
 		if (!shoulder) return 0;
 		const lever = Math.abs(leverZ(shoulder, point, n));
 		if (lever < 1e-4) return Infinity;
-		return armModel(params()).inertia / (lever * lever);
+		return armModel(fighterParams(f)).inertia / (lever * lever);
 	}
 	function seriousMass(value, fallback) {
 		return isFinite(value) && value > 0 ? value : fallback;
@@ -37703,6 +37757,12 @@ void main() {
 	}
 	function sync() {
 		for (const f of activeFighters()) syncBodies(f.meshes, f.bodies);
+		if (meshes.bag && bagBodyRef) {
+			const t = bagBodyRef.translation();
+			const r = bagBodyRef.rotation();
+			meshes.bag.position.set(t.x, t.y, t.z);
+			meshes.bag.quaternion.set(r.x, r.y, r.z, r.w);
+		}
 	}
 	function animate() {
 		requestAnimationFrame(animate);
@@ -37773,6 +37833,16 @@ void main() {
 			shoulder: 1.2,
 			elbow: 0,
 			stiffness: 1
+		} : null;
+		build();
+	});
+	ui.secondBody.addEventListener("change", () => {
+		p2Params = ui.secondBody.checked ? {
+			massMul: 1.8,
+			lenMul: .8,
+			structure: .1,
+			muscle: 7e3,
+			torque: 80
 		} : null;
 		build();
 	});
