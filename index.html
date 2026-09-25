@@ -87,9 +87,9 @@
   <label><input type="checkbox" id="second-body" /> второй боец — своё тело (тяжёлое и вязкое)</label>
   <label><input type="checkbox" id="free-feet" /> первый боец на якоре (для старых замеров)</label>
   <label><input type="checkbox" id="free-feet-2" /> второй боец на якоре</label>
-  <label>Движение первого, м/с <span class="val" id="v-move1">0.00</span></label>
+  <label>Движение первого, м/с <span class="dim">(в работе)</span> <span class="val" id="v-move1">0.00</span></label>
   <input type="range" id="move1" min="-0.8" max="0.8" step="0.05" value="0" />
-  <label>Движение второго, м/с <span class="val" id="v-move2">0.00</span></label>
+  <label>Движение второго, м/с <span class="dim">(в работе)</span> <span class="val" id="v-move2">0.00</span></label>
   <input type="range" id="move2" min="-0.8" max="0.8" step="0.05" value="0" />
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
@@ -35142,10 +35142,11 @@ void main() {
 	}, Math.PI / 2);
 	var p2Params = null;
 	var GAIT = {
-		cycle: 1.15,
+		cycle: 1.4,
 		stance: .62,
 		lift: .06,
 		crouch: .08,
+		rail: .005,
 		arm: 5,
 		maxSpeed: 1.2
 	};
@@ -37418,7 +37419,7 @@ void main() {
 		const hips = ["front", "back"].map((s) => f.bodies["thigh_" + s]).filter(Boolean).map((b) => b.translation().y);
 		const hipY = hips.length ? hips.reduce((a, b) => a + b, 0) / hips.length : Y.hip;
 		let dy = Y.hip - GAIT.crouch - hipY;
-		dy = Math.max(-.02, Math.min(.02, dy));
+		dy = Math.max(-GAIT.rail, Math.min(GAIT.rail, dy));
 		for (const b of Object.values(f.bodies)) {
 			if (!b) continue;
 			const t = b.translation();
@@ -37439,9 +37440,9 @@ void main() {
 			const kneeJ = f.joints["knee_" + side];
 			const ankleJ = f.joints["ankle_" + side];
 			try {
-				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 6, damp * 2.5);
-				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 4, damp * 2);
-				if (ankleJ) ankleJ.configureMotorPosition(a.ankle, muscle * .1, damp * 1.2);
+				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 1.6, damp * 2);
+				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 1.2, damp * 1.6);
+				if (ankleJ) ankleJ.configureMotorPosition(a.ankle, muscle * .03, damp * 1.6);
 			} catch (e) {}
 		}
 		const swing = Math.sin(2 * Math.PI * g.phase) * GAIT.arm * dt;
