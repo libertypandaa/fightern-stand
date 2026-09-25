@@ -163,6 +163,7 @@
   <div class="row"><span class="dim">Импульс формулы</span><b id="c-formula">—</b></div>
   <div class="row"><span class="dim">Расхождение</span><b id="c-diverge">—</b></div>
   <div class="row"><span class="dim">Решение порога</span><b id="c-decide">—</b></div>
+  <div class="row"><span class="dim">Противник: зона и шкала</span><b id="c-oppon">—</b></div>
   <div class="row"><span class="dim">Пиковая сила контакта</span><b id="c-peak">—</b></div>
 </div>
 
@@ -35127,6 +35128,12 @@ void main() {
 		turn: Math.PI
 	}, Math.PI / 2);
 	var p2Params = null;
+	var VIRTUAL = {
+		id: "target",
+		damage: {},
+		broken: {},
+		condition: {}
+	};
 	function fighterParams(f) {
 		const base = params();
 		if (f === P2 && p2Params) return {
@@ -35220,6 +35227,7 @@ void main() {
 		cFormula: document.getElementById("c-formula"),
 		cDiverge: document.getElementById("c-diverge"),
 		cDecide: document.getElementById("c-decide"),
+		cOppon: document.getElementById("c-oppon"),
 		cPeak: document.getElementById("c-peak")
 	};
 	var renderer = new WebGLRenderer({ antialias: true });
@@ -35277,6 +35285,7 @@ void main() {
 	var bagSupport = 0;
 	var bagSupportDamping = 0;
 	var bagMassOverride = 0;
+	var paused = false;
 	var flashUntil = 0;
 	var lastHand = null;
 	var lastHandVel = null;
@@ -35419,11 +35428,11 @@ void main() {
 			seam: ui.seam.checked
 		};
 	}
-	function zoneCapacity(kind, structureValue) {
+	function zoneCapacity(who, kind, structureValue) {
 		const mass = ZONE[kind].frac * BODY_MASS;
 		const tough = structureOf({ structure: structureValue }).strength;
 		const pair = PAIRED_ZONES.includes(kind) ? 2 : 1;
-		const trained = 1 + COND.capacityGain * (zoneCondition(kind) - 1);
+		const trained = 1 + COND.capacityGain * (zoneCondition(who, kind) - 1);
 		return DAMAGE.total * (mass / BODY_MASS) * tough * pair * trained;
 	}
 	var PAIRED_ZONES = [
@@ -35434,21 +35443,26 @@ void main() {
 		"shin",
 		"foot"
 	];
-	function zoneCriticalForce(kind, structureValue) {
+	function zoneCriticalForce(who, kind, structureValue) {
 		const frac = ZONE[kind].frac * (PAIRED_ZONES.includes(kind) ? 2 : 1);
 		const ratio = Math.pow(frac / CRIT.massRef, 2 / 3);
 		const brittle = 1 - (1 - CRIT.crystalMul) * structureValue;
-		const trained = 1 + COND.gain * (zoneCondition(kind) - 1);
+		const trained = 1 + COND.gain * (zoneCondition(who, kind) - 1);
 		return CRIT.headRef * ratio * brittle * trained;
 	}
-	function zoneCondition(kind) {
-		return condition[kind] === void 0 ? 1 : condition[kind];
+	function whoIs(id) {
+		return id === "p2" ? P2 : id === "target" ? VIRTUAL : P1;
 	}
-	function trainZone(kind, load, per) {
-		const cur = zoneCondition(kind);
+	function zoneCondition(who, kind) {
+		const map = who && who.condition ? who.condition : condition;
+		return map[kind] === void 0 ? 1 : map[kind];
+	}
+	function trainZone(who, kind, load, per) {
+		const map = who && who.condition ? who.condition : condition;
+		const cur = zoneCondition(who, kind);
 		if (cur >= COND.max) return;
 		const gain = (per === void 0 ? COND.perHit : COND.perSession) * Math.min(1.5, Math.max(0, load)) * (1 - cur / COND.max);
-		condition[kind] = Math.min(COND.max, cur + gain);
+		map[kind] = Math.min(COND.max, cur + gain);
 	}
 	var TRAIN = {
 		strength: {
@@ -35533,7 +35547,7 @@ void main() {
 			ui.vStrikeTime.textContent = ui.strikeTime.value;
 		}
 		if (t.reserve) reserve = Math.min(2, reserve + t.reserve * (1 - reserve / 2));
-		byTrainZones(type).forEach((k) => trainZone(k, 1.2, "session"));
+		byTrainZones(type).forEach((k) => trainZone(P1, k, 1.2, "session"));
 	}
 	function byTrainZones(type) {
 		if (type === "defense") return [
@@ -35566,10 +35580,10 @@ void main() {
 			legForce: p.legForce,
 			structure: p.structure,
 			reserve,
-			conditionHand: zoneCondition("hand"),
-			conditionShin: zoneCondition("shin"),
-			capacityHand: zoneCapacity("hand", p.structure),
-			criticalHand: zoneCriticalForce("hand", p.structure)
+			conditionHand: zoneCondition(P1, "hand"),
+			conditionShin: zoneCondition(P1, "shin"),
+			capacityHand: zoneCapacity(P1, "hand", p.structure),
+			criticalHand: zoneCriticalForce(P1, "hand", p.structure)
 		};
 	}
 	function fight(opts) {
@@ -35590,7 +35604,7 @@ void main() {
 					peak: m.peak,
 					stamina: m.staminaArm,
 					zoneGauge: m.zoneDamage / Math.max(.01, m.zoneCapacity),
-					handGauge: m.handDamage / Math.max(.01, zoneCapacity("hand", m.structure)),
+					handGauge: m.handDamage / Math.max(.01, zoneCapacity(P1, "hand", m.structure)),
 					conditionHand: m.conditionHand,
 					zoneBroken: m.zoneBroken,
 					handBroken: m.handBroken,
@@ -35602,19 +35616,29 @@ void main() {
 		}
 		return log;
 	}
-	function addDamage(kind, energyJ, structureValue, hasSeam, peakForce) {
-		if (broken[kind]) return;
-		const cap = zoneCapacity(kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
-		if (energyJ > 0) damage[kind] = (damage[kind] || 0) + energyJ;
-		const crit = zoneCriticalForce(kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
+	function addDamage(who, kind, energyJ, structureValue, hasSeam, peakForce) {
+		const dmg = who && who.damage ? who.damage : damage;
+		const brk = who && who.broken ? who.broken : broken;
+		if (brk[kind]) return;
+		const cap = zoneCapacity(who, kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
+		if (energyJ > 0) dmg[kind] = (dmg[kind] || 0) + energyJ;
+		const crit = zoneCriticalForce(who, kind, structureValue) * (hasSeam ? DAMAGE.seamMul : 1);
 		const forced = peakForce > 0 && peakForce >= crit;
 		const seamBreak = hasSeam && peakForce > 0 && peakForce >= crit * DAMAGE.seamBrittle;
-		if (forced || seamBreak || (damage[kind] || 0) >= cap) broken[kind] = true;
+		if (forced || seamBreak || (dmg[kind] || 0) >= cap) brk[kind] = true;
 	}
 	function decayDamage(dt) {
-		for (const kind of Object.keys(damage)) {
-			const cap = zoneCapacity(kind, params().targetStructure);
-			damage[kind] = Math.max(0, damage[kind] - cap * DAMAGE.decayPerSec * dt);
+		for (const who of [
+			P1,
+			P2,
+			VIRTUAL
+		]) {
+			if (!who || !who.damage) continue;
+			const structure = who === VIRTUAL ? params().targetStructure : fighterParams(who).structure;
+			for (const kind of Object.keys(who.damage)) {
+				const cap = zoneCapacity(who, kind, structure);
+				who.damage[kind] = Math.max(0, who.damage[kind] - cap * DAMAGE.decayPerSec * dt);
+			}
 		}
 	}
 	function addBox(body, hx, hy, hz, ox, oy, mass, opts) {
@@ -35645,7 +35669,7 @@ void main() {
 		if (!pose) return;
 		const f = pose.fighter === "p2" ? P2 : P1;
 		const p = params();
-		const k = pose.stiffness === void 0 ? 1 : pose.stiffness;
+		const k = !!(f.broken.upperArm || f.broken.forearm || f.broken.hand) ? 0 : pose.stiffness === void 0 ? 1 : pose.stiffness;
 		const stiff = p.muscle * p.stance * 2 * k;
 		const damp = Math.sqrt(p.muscle / 900) * 60 * p.stance;
 		const shoulder = f.joints["shoulder_" + pose.side];
@@ -36079,8 +36103,8 @@ void main() {
 		const reach = m.LU + m.LF + m.LH;
 		ui.dRfd.textContent = Math.round(p.torque / reach / Math.max(p.rise, .001)) + " Н/с";
 		ui.dStrength.textContent = Math.round(structureOf(p).strength * 100) + "%";
-		const cap = zoneCapacity(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
-		const crit = zoneCriticalForce(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		const cap = zoneCapacity(VIRTUAL, p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		const crit = zoneCriticalForce(VIRTUAL, p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
 		ui.dCapacity.textContent = cap.toFixed(1) + " Дж / " + Math.round(crit / 1e3 * 10) / 10 + " кН" + (p.seam ? " (спайка)" : "");
 		const fore = bodies["forearm_front"];
 		const upper = bodies["upperArm_front"];
@@ -36185,12 +36209,26 @@ void main() {
 		stamina.arm = 1;
 		stamina.legs = 1;
 	}
-	function resetDamage() {
-		for (const k of Object.keys(damage)) delete damage[k];
-		for (const k of Object.keys(broken)) delete broken[k];
+	function resetDamage(id) {
+		for (const who of id ? [whoIs(id)] : [
+			P1,
+			P2,
+			VIRTUAL
+		]) {
+			if (!who) continue;
+			for (const k of Object.keys(who.damage)) delete who.damage[k];
+			for (const k of Object.keys(who.broken)) delete who.broken[k];
+		}
 	}
-	function resetCondition() {
-		for (const k of Object.keys(condition)) delete condition[k];
+	function resetCondition(id) {
+		for (const who of id ? [whoIs(id)] : [
+			P1,
+			P2,
+			VIRTUAL
+		]) {
+			if (!who) continue;
+			for (const k of Object.keys(who.condition)) delete who.condition[k];
+		}
 	}
 	function exposeDiagnostics() {
 		function physicsProbe() {
@@ -36272,10 +36310,11 @@ void main() {
 			resetDamage,
 			readCondition: () => ({ ...condition }),
 			resetCondition,
-			condition: (kind) => zoneCondition(kind),
-			setCondition: (kind, value) => {
-				condition[kind] = Math.max(1, Math.min(COND.max, value));
-				return condition[kind];
+			condition: (kind, id) => zoneCondition(whoIs(id), kind),
+			setCondition: (kind, value, id) => {
+				const map = whoIs(id).condition;
+				map[kind] = Math.max(1, Math.min(COND.max, value));
+				return map[kind];
 			},
 			train,
 			bodyState,
@@ -36357,6 +36396,11 @@ void main() {
 				build();
 				return on ? "opponent" : "bag";
 			},
+			setPaused: (on) => {
+				paused = !!on;
+				return paused;
+			},
+			readPaused: () => paused,
 			readContactTarget: () => bagHidden ? "opponent" : "bag",
 			setGuard: (pose) => {
 				guard = pose ? {
@@ -36409,7 +36453,18 @@ void main() {
 					}
 					stepPhysics();
 				}
-				return out;
+				const s = oppSummary();
+				return {
+					trace: out,
+					maxX: out.reduce((a, p) => Math.max(a, p.x), 0),
+					contact: s.contact,
+					firstT: s.firstT,
+					partB: s.partB,
+					engine: s.engineImpact,
+					gauge: s.targetGauge,
+					targetZone: s.targetZone,
+					targetBroken: s.targetBroken
+				};
 			},
 			shoulder: (id, side) => shoulderPointOf(id === "p2" ? P2 : P1, side || "front"),
 			inertiaZ: (id, part) => {
@@ -36468,8 +36523,25 @@ void main() {
 				build();
 				return bodyState();
 			},
-			capacity: (kind, structureValue) => zoneCapacity(kind, structureValue === void 0 ? params().targetStructure : structureValue),
-			criticalForce: (kind, structureValue) => zoneCriticalForce(kind, structureValue === void 0 ? params().targetStructure : structureValue),
+			capacity: (kind, structureValue) => zoneCapacity(VIRTUAL, kind, structureValue === void 0 ? params().targetStructure : structureValue),
+			criticalForce: (kind, structureValue) => zoneCriticalForce(VIRTUAL, kind, structureValue === void 0 ? params().targetStructure : structureValue),
+			readDamageOf: (id) => {
+				const who = whoIs(id);
+				return {
+					damage: { ...who.damage },
+					broken: { ...who.broken },
+					condition: { ...who.condition }
+				};
+			},
+			breakZone: (id, kind, on) => {
+				const who = whoIs(id);
+				if (on === false) delete who.broken[kind];
+				else who.broken[kind] = true;
+				build();
+				return { ...who.broken };
+			},
+			conditionOf: (id, kind) => zoneCondition(whoIs(id), kind),
+			capacityOf: (id, kind, structureValue) => zoneCapacity(whoIs(id), kind, structureValue === void 0 ? fighterParams(whoIs(id)).structure : structureValue),
 			setBagPhase: (phase) => {
 				bagPhase = Math.max(0, phase);
 				build();
@@ -37012,7 +37084,7 @@ void main() {
 		const shareSelf = softSelf / (softSelf + softTarget);
 		const energyToZone = absorbed * shareTarget;
 		const energyToHand = absorbed * shareSelf;
-		addDamage(p.zone, energyToZone, p.targetStructure, p.seam, measure.peak);
+		addDamage(VIRTUAL, p.zone, energyToZone, p.targetStructure, p.seam, measure.peak);
 		const armZones = [
 			"upperArm",
 			"forearm",
@@ -37021,26 +37093,26 @@ void main() {
 		const armMassTotal = armZones.reduce((a, k) => a + ZONE[k].frac * BODY_MASS, 0);
 		for (const k of armZones) {
 			const part = ZONE[k].frac * BODY_MASS / armMassTotal;
-			addDamage(k, energyToHand * part, p.structure, false, measure.peak);
-			trainZone(k, energyToHand * part / Math.max(.01, zoneCapacity(k, p.structure)));
+			addDamage(P1, k, energyToHand * part, p.structure, false, measure.peak);
+			trainZone(P1, k, energyToHand * part / Math.max(.01, zoneCapacity(P1, k, p.structure)));
 		}
-		trainZone(p.zone, energyToZone / Math.max(.01, zoneCapacity(p.zone, p.targetStructure)) * .5);
+		trainZone(VIRTUAL, p.zone, energyToZone / Math.max(.01, zoneCapacity(VIRTUAL, p.zone, p.targetStructure)) * .5);
 		measure.absorbed = absorbed;
 		measure.energyToZone = energyToZone;
 		measure.energyToHand = energyToHand;
-		measure.zoneCapacity = zoneCapacity(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
-		measure.zoneCritical = zoneCriticalForce(p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
-		measure.zoneDamage = damage[p.zone] || 0;
-		measure.handDamage = damage.hand || 0;
+		measure.zoneCapacity = zoneCapacity(VIRTUAL, p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		measure.zoneCritical = zoneCriticalForce(VIRTUAL, p.zone, p.targetStructure) * (p.seam ? DAMAGE.seamMul : 1);
+		measure.zoneDamage = VIRTUAL.damage[p.zone] || 0;
+		measure.handDamage = P1.damage.hand || 0;
 		measure.armDamage = {
-			upperArm: damage.upperArm || 0,
-			forearm: damage.forearm || 0,
-			hand: damage.hand || 0
+			upperArm: P1.damage.upperArm || 0,
+			forearm: P1.damage.forearm || 0,
+			hand: P1.damage.hand || 0
 		};
-		measure.conditionZone = zoneCondition(p.zone);
-		measure.conditionHand = zoneCondition("hand");
-		measure.zoneBroken = !!broken[p.zone];
-		measure.handBroken = !!broken.hand;
+		measure.conditionZone = zoneCondition(VIRTUAL, p.zone);
+		measure.conditionHand = zoneCondition(P1, "hand");
+		measure.zoneBroken = !!VIRTUAL.broken[p.zone];
+		measure.handBroken = !!P1.broken.hand;
 		measure.mArm = mArm;
 		measure.mBag = mBag;
 		measure.leverArm = leverArm;
@@ -37179,6 +37251,47 @@ void main() {
 	}
 	function seriousMass(value, fallback) {
 		return isFinite(value) && value > 0 ? value : fallback;
+	}
+	function applyContactDamage(best, approach, e) {
+		const target = best.b.fighter === "bag" ? VIRTUAL : whoIs(best.b.fighter);
+		if (!target) return;
+		const targetZone = best.b.module && ZONE[best.b.module] ? best.b.module : "chest";
+		const p1 = fighterParams(P1);
+		const arm = armModel(p1);
+		const targetStructure = best.b.fighter === "bag" ? params().targetStructure : fighterParams(target).structure;
+		const fore = P1.bodies["forearm_front"];
+		const prev = fore ? PREV_VEL.get(fore) : null;
+		const omega = Math.abs(prev ? prev.w.z : fore ? fore.angvel().z : 0);
+		const keArm = .5 * arm.inertia * omega * omega;
+		const mu = 1 / (1 / Math.max(.01, opp.mEffA) + 1 / Math.max(.01, opp.mEffB));
+		const absorbed = Math.min(.5 * mu * approach * approach * (1 - e * e), keArm);
+		const softSelf = 1.05 - p1.structure;
+		const softTarget = 1.05 - targetStructure;
+		const shareTarget = softTarget / (softSelf + softTarget);
+		const shareSelf = softSelf / (softSelf + softTarget);
+		const energyToTarget = absorbed * shareTarget;
+		const energyToSelf = absorbed * shareSelf;
+		addDamage(target, targetZone, energyToTarget, targetStructure, false, opp.peakForce);
+		trainZone(target, targetZone, energyToTarget / Math.max(.01, zoneCapacity(target, targetZone, targetStructure)) * .5);
+		const armZones = [
+			"upperArm",
+			"forearm",
+			"hand"
+		];
+		const armMassTotal = armZones.reduce((a, k) => a + ZONE[k].frac * BODY_MASS, 0);
+		for (const k of armZones) {
+			const part = ZONE[k].frac * BODY_MASS / armMassTotal;
+			addDamage(P1, k, energyToSelf * part, p1.structure, false, opp.peakForce);
+			trainZone(P1, k, energyToSelf * part / Math.max(.01, zoneCapacity(P1, k, p1.structure)));
+		}
+		opp.targetZone = targetZone;
+		opp.energyTarget = energyToTarget;
+		opp.energySelf = energyToSelf;
+		opp.targetCondition = zoneCondition(target, targetZone);
+		opp.targetDamage = target.damage[targetZone] || 0;
+		opp.targetCapacity = zoneCapacity(target, targetZone, targetStructure);
+		opp.targetBroken = !!target.broken[targetZone];
+		opp.selfBroken = !!(P1.broken.upperArm || P1.broken.forearm || P1.broken.hand);
 	}
 	function contactKind() {
 		if (!opp.started) return null;
@@ -37391,6 +37504,7 @@ void main() {
 				x: c.x,
 				y: c.y
 			};
+			applyContactDamage(best, v, opp.e);
 		}
 		if (opp.targetBody && opp.targetStart) {
 			const c = opp.targetBody.worldCom();
@@ -37468,7 +37582,16 @@ void main() {
 			totalVsStand: rel(opp.impulse, opp.J),
 			comShiftP1: +(p1 - start.p1).toFixed(4),
 			comShiftP2: +(p2 - start.p2).toFixed(4),
-			gaps: opp.gaps
+			gaps: opp.gaps,
+			targetZone: opp.targetZone,
+			targetDamage: opp.targetDamage,
+			targetCapacity: opp.targetCapacity,
+			targetCondition: opp.targetCondition,
+			targetBroken: opp.targetBroken,
+			selfBroken: opp.selfBroken,
+			energyTarget: opp.energyTarget,
+			energySelf: opp.energySelf,
+			targetGauge: opp.targetCapacity > 0 ? opp.targetDamage / opp.targetCapacity : 0
 		};
 	}
 	function clinchRun(opts) {
@@ -37555,6 +37678,14 @@ void main() {
 		opp.Jmodel = 0;
 		opp.appliedForce = 0;
 		opp.JmodelChain = 0;
+		opp.targetZone = null;
+		opp.targetDamage = 0;
+		opp.targetCapacity = 0;
+		opp.targetCondition = 1;
+		opp.targetBroken = false;
+		opp.selfBroken = false;
+		opp.energyTarget = 0;
+		opp.energySelf = 0;
 		opp.startCom = {
 			p1: fighterComX(P1),
 			p2: P2.bodies.chest ? fighterComX(P2) : 0
@@ -37710,10 +37841,10 @@ void main() {
 		ui.dHitEnergy.textContent = measure.energyToZone.toFixed(1) + " Дж";
 		const cap = Math.max(.01, measure.zoneCapacity);
 		ui.dZoneDamage.textContent = Math.round(Math.min(100, measure.zoneDamage / cap * 100)) + "%" + (measure.zoneBroken ? " — отломана" : "");
-		const handCap = Math.max(.01, zoneCapacity("hand", params().structure));
+		const handCap = Math.max(.01, zoneCapacity(P1, "hand", params().structure));
 		ui.dHandDamage.textContent = Math.round(Math.min(100, measure.handDamage / handCap * 100)) + "%" + (measure.handBroken ? " — отломана" : "");
-		ui.dHandCond.textContent = "×" + zoneCondition("hand").toFixed(2);
-		ui.dZoneCond.textContent = "×" + zoneCondition(params().zone).toFixed(2);
+		ui.dHandCond.textContent = "×" + zoneCondition(P1, "hand").toFixed(2);
+		ui.dZoneCond.textContent = "×" + zoneCondition(VIRTUAL, params().zone).toFixed(2);
 	}
 	function reportPair() {
 		if (!ui.dDistance) return;
@@ -37730,6 +37861,7 @@ void main() {
 			ui.cFormula.textContent = "—";
 			ui.cDiverge.textContent = "—";
 			if (ui.cDecide) ui.cDecide.textContent = "—";
+			if (ui.cOppon) ui.cOppon.textContent = "—";
 			ui.cPeak.textContent = "—";
 			return;
 		}
@@ -37739,6 +37871,7 @@ void main() {
 		ui.cFormula.textContent = s.formulaModel.toFixed(2) + " Н·с" + (s.supported ? ", цель держится" : ", цель свободна");
 		ui.cDiverge.textContent = isFinite(s.divergenceModel) ? (s.divergenceModel > 0 ? "+" : "") + Math.round(s.divergenceModel * 100) + "%" : "—";
 		ui.cPeak.textContent = Math.round(s.peakForce) + " Н";
+		if (ui.cOppon) ui.cOppon.textContent = s.targetZone ? s.targetZone + " " + Math.round(Math.min(100, s.targetGauge * 100)) + "%" + (s.targetBroken ? " — отломана" : "") + ", набитость ×" + s.targetCondition.toFixed(2) : "—";
 		if (ui.cDecide) {
 			const d = decide();
 			ui.cDecide.textContent = d.kind ? d.intervene ? "вмешаться — " + d.metric : "норма — " + d.metric : "—";
@@ -37766,7 +37899,7 @@ void main() {
 	}
 	function animate() {
 		requestAnimationFrame(animate);
-		if (world) {
+		if (world && !paused) {
 			for (let i = 0; i < 8; i++) stepPhysics();
 			sync();
 			report();
