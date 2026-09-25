@@ -53,6 +53,61 @@
     position: fixed; left: 50%; bottom: 152px; margin-left: -65px; width: 130px; text-align: center;
     color: #7c8598; font-size: 11px; pointer-events: none; z-index: 6;
   }
+
+  /* Кнопки-переключатели и удар для телефона: на большом экране их нет. */
+  .pill {
+    display: none; position: fixed; z-index: 7; padding: 10px 14px; border-radius: 12px;
+    border: 1px solid #3a4152; background: rgba(20,24,31,.82); color: #e6e9ef;
+    font-size: 13px; user-select: none; -webkit-user-select: none; cursor: pointer;
+  }
+  #toggle-params { left: 10px; top: 10px; }
+  #toggle-readout { right: 10px; top: 10px; }
+  #punch-mobile {
+    right: 18px; bottom: 22px; width: 132px; height: 76px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    font-size: 19px; font-weight: 600; border-radius: 18px;
+    background: #2b3a2f; border-color: #3f5a46;
+  }
+
+  /* ---------------------------------------------------------------------
+     Телефон: сцена на весь экран, панели прячутся, управление по краям.
+     Джойстик слева внизу, удар справа внизу — по углам, чтобы не закрывать
+     бойца, который стоит в середине кадра. Горизонтальный формат — основной.
+     --------------------------------------------------------------------- */
+  @media (pointer: coarse) {
+    #controls, #readout { display: none; }
+    body.show-params #controls { display: block; }
+    body.show-readout #readout { display: block; }
+    #controls {
+      left: 8px; top: 54px; right: auto; bottom: auto; width: min(86vw, 320px);
+      max-height: 66vh; overflow-y: auto; font-size: 12px;
+    }
+    #readout {
+      right: 8px; top: 54px; left: auto; width: min(86vw, 320px);
+      max-height: 66vh; overflow-y: auto; font-size: 11px;
+    }
+    .panel { padding: 8px 10px; border-radius: 12px; }
+    h2 { font-size: 10px; margin: 0 0 6px; }
+    .row { padding: 2px 0; }
+    label { margin: 5px 0 1px; }
+    button { padding: 12px 10px; margin-top: 8px; font-size: 14px; }
+    input[type=range] { height: 30px; }
+    #toggle-params, #toggle-readout { display: block; }
+    #punch-mobile { display: flex; }
+    #stick { left: 20px; bottom: 20px; margin-left: 0; width: 138px; height: 138px; }
+    #stick-knob { width: 58px; height: 58px; margin: -29px 0 0 -29px; }
+    #stick-label { display: none; }
+    #hint { display: none; }
+  }
+
+  /* Телефон в горизонтальном формате: панели уже, удар крупнее. */
+  @media (pointer: coarse) and (orientation: landscape) {
+    #controls { top: 50px; width: min(60vw, 300px); max-height: 74vh; }
+    #readout { top: 50px; width: min(52vw, 280px); max-height: 74vh; }
+    #stick { width: 126px; height: 126px; left: 16px; bottom: 14px; }
+    #stick-knob { width: 54px; height: 54px; margin: -27px 0 0 -27px; }
+    #punch-mobile { right: 16px; bottom: 14px; width: 126px; height: 68px; }
+  }
   @media (max-width: 780px), (orientation: portrait) {
     #stick { width: 96px; height: 96px; margin-left: -48px; bottom: calc(50vh + 12px); }
     #stick-knob { width: 40px; height: 40px; margin: -20px 0 0 -20px; }
@@ -198,6 +253,9 @@
 
 <div id="stick"><div id="stick-knob"></div></div>
 <div id="stick-label">джойстик: тяни в сторону</div>
+<div class="pill" id="toggle-params">параметры</div>
+<div class="pill" id="toggle-readout">замеры</div>
+<div class="pill" id="punch-mobile">Удар</div>
 
 <script>
 (function() {
@@ -35171,8 +35229,10 @@ void main() {
 		lift: .04,
 		crouch: .08,
 		rail: .005,
-		arm: .5,
-		armDamp: .004,
+		armAngle: .28,
+		coreTilt: 900,
+		coreDamp: 90,
+		coreLimit: 220,
 		kVel: 420,
 		kPos: 260,
 		tLimit: 160,
@@ -37596,21 +37656,28 @@ void main() {
 				if (ankleJ) ankleJ.configureMotorPosition(a.ankle, muscle * .03, damp * 1.6);
 			} catch (e) {}
 		}
-		const swing = Math.sin(2 * Math.PI * g.phase) * GAIT.arm * dt;
+		const swingAngle = Math.sin(2 * Math.PI * g.phase) * GAIT.armAngle;
 		for (const side of ["front", "back"]) {
-			const arm = f.bodies["upperArm_" + side];
-			if (!arm) continue;
+			if (!f.bodies["upperArm_" + side]) continue;
 			const sign = side === "front" ? -1 : 1;
-			arm.applyTorqueImpulse({
+			const shoulder = f.joints["shoulder_" + side];
+			const elbow = f.joints["elbow_" + side];
+			try {
+				if (shoulder) shoulder.configureMotorPosition(swingAngle * sign, muscle * 1.2, damp * 2.2);
+				if (elbow) elbow.configureMotorPosition(.35, muscle * .8, damp * 1.6);
+			} catch (e) {}
+		}
+		const pelvis = f.bodies.abdomen;
+		if (pelvis && typeof pelvis.isDynamic === "function" && pelvis.isDynamic()) {
+			const turn = f.place.turn ? -1 : 1;
+			const roll = localRoll(pelvis, turn) * turn;
+			const w = pelvis.angvel();
+			const t = -(GAIT.coreTilt * roll + GAIT.coreDamp * w.z) * dt;
+			const capped = Math.max(-GAIT.coreLimit * dt, Math.min(GAIT.coreLimit * dt, t));
+			pelvis.applyTorqueImpulse({
 				x: 0,
 				y: 0,
-				z: swing * sign
-			}, true);
-			const w = arm.angvel();
-			arm.setAngvel({
-				x: w.x,
-				y: w.y,
-				z: w.z * (1 - GAIT.armDamp)
+				z: capped
 			}, true);
 		}
 		if (GAIT.harness && f.pose) for (const key of [
@@ -38289,6 +38356,10 @@ void main() {
 		requestAnimationFrame(animate);
 		if (world && !paused) {
 			for (let i = 0; i < 8; i++) stepPhysics();
+			if (!secondFighter && P1.bodies.abdomen) {
+				const x = P1.bodies.abdomen.translation().x;
+				camera.position.x += (x + .15 - camera.position.x) * .06;
+			}
 			sync();
 			report();
 			reportPair();
@@ -38304,6 +38375,15 @@ void main() {
 	ui.vStrikeTime.textContent = String(STRIKE.contactMs);
 	ui.vRise.textContent = String(DRIVE.riseMs);
 	if (window.innerWidth <= 780 || window.matchMedia("(orientation: portrait)").matches) document.getElementById("params").open = false;
+	if (window.matchMedia("(pointer: coarse)").matches) document.getElementById("params").open = false;
+	function wirePill(id, cls) {
+		const el = document.getElementById(id);
+		if (el) el.addEventListener("click", () => document.body.classList.toggle(cls));
+	}
+	wirePill("toggle-params", "show-params");
+	wirePill("toggle-readout", "show-readout");
+	var punchMobile = document.getElementById("punch-mobile");
+	if (punchMobile) punchMobile.addEventListener("click", () => punch());
 	ui.mass.addEventListener("input", () => {
 		ui.vMass.textContent = "×" + (+ui.mass.value).toFixed(2);
 		build();
