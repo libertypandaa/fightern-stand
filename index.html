@@ -85,6 +85,7 @@
   <label><input type="checkbox" id="contact" /> цель — второй боец, без груши</label>
   <label><input type="checkbox" id="guard" /> второй держит блок</label>
   <label><input type="checkbox" id="second-body" /> второй боец — своё тело (тяжёлое и вязкое)</label>
+  <label><input type="checkbox" id="free-feet" /> второй боец стоит на своих ногах</label>
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
@@ -35102,6 +35103,7 @@ void main() {
 			bodies: {},
 			joints: {},
 			meshes: {},
+			freeFeet: false,
 			balance: {
 				ref: 0,
 				prev: 0,
@@ -35168,6 +35170,7 @@ void main() {
 		contact: document.getElementById("contact"),
 		guard: document.getElementById("guard"),
 		secondBody: document.getElementById("second-body"),
+		freeFeet: document.getElementById("free-feet"),
 		clinch: document.getElementById("clinch"),
 		legs: document.getElementById("legs"),
 		targetStructure: document.getElementById("target-structure"),
@@ -35705,7 +35708,7 @@ void main() {
 		world.numSolverIterations = SOLVER_ITERATIONS;
 		eventQueue = new Og.EventQueue(true);
 		const ground = world.createRigidBody(Og.RigidBodyDesc.fixed());
-		world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setFriction(1).setCollisionGroups(GROUPS.world), ground);
+		world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setTranslation(0, -.05, 0).setFriction(1).setCollisionGroups(GROUPS.world), ground);
 		const groundMesh = new Mesh(new BoxGeometry(16, .1, 1), matGround);
 		groundMesh.position.set(0, -.05, 0);
 		scene.add(groundMesh);
@@ -35862,12 +35865,30 @@ void main() {
 		});
 		for (const side of ["back", "front"]) {
 			const x = side === "back" ? LEG_BACK_X : LEG_FRONT_X;
-			const foot = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0))));
+			const footDesc = f.freeFeet ? Og.RigidBodyDesc.dynamic().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0))).setLinearDamping(.6).setAngularDamping(.9) : Og.RigidBodyDesc.fixed().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0)));
+			const foot = world.createRigidBody(footDesc);
 			addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot, {
 				fighter: f.id,
 				module: "foot",
-				part: "foot_" + side
+				part: "foot_" + side,
+				friction: f.freeFeet ? 1.4 : .7
 			});
+			if (f.freeFeet) try {
+				foot.setAdditionalMassProperties(.6, {
+					x: L.foot / 2 - .06,
+					y: -.035,
+					z: 0
+				}, {
+					x: .03,
+					y: .012,
+					z: .03
+				}, {
+					x: 0,
+					y: 0,
+					z: 0,
+					w: 1
+				}, true);
+			} catch (e) {}
 			put("foot_" + side, makeMesh(L.foot, .09, T * 2, L.foot / 2 - .06, -.035, matLimbs));
 			const shin = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(x, kneeY, 0)).setRotation(Q(quatZ(aShin))).setLinearDamping(.2).setAngularDamping(.2));
 			addBox(shin, T, L.shin / 2, T, 0, -L.shin / 2, M.shin, {
@@ -35969,6 +35990,8 @@ void main() {
 			const ankleBody = bodiesF["foot_" + side];
 			const shin = bodiesF["shin_" + side];
 			const thigh = bodiesF["thigh_" + side];
+			const ankleStiff = stiff * (f.freeFeet ? .1 : .2);
+			const ankleDamp = damp * (f.freeFeet ? 1.2 : .45);
 			jointsF["ankle_" + side] = hinge(ankleBody, {
 				x: 0,
 				y: 0,
@@ -35977,7 +36000,7 @@ void main() {
 				x: 0,
 				y: -L.shin,
 				z: 0
-			}, stiff * .2, damp * .45, -aShin);
+			}, ankleStiff, ankleDamp, -aShin);
 			jointsF["knee_" + side] = hinge(shin, {
 				x: 0,
 				y: 0,
@@ -36330,6 +36353,13 @@ void main() {
 				return secondFighter;
 			},
 			readSecondFighter: () => secondFighter,
+			setFreeFeet: (id, on) => {
+				const f = id === "p1" ? P1 : P2;
+				f.freeFeet = !!on;
+				build();
+				return f.freeFeet;
+			},
+			readFreeFeet: (id) => (id === "p1" ? P1 : P2).freeFeet,
 			setSecondStep: (x) => {
 				secondX = x;
 				build();
@@ -37977,6 +38007,10 @@ void main() {
 			muscle: 7e3,
 			torque: 80
 		} : null;
+		build();
+	});
+	ui.freeFeet.addEventListener("change", () => {
+		P2.freeFeet = ui.freeFeet.checked;
 		build();
 	});
 	ui.clinch.addEventListener("click", () => {
