@@ -79,6 +79,11 @@
   <input type="range" id="bend" min="0" max="12" step="1" value="0" />
   <label>Шаг вперёд, см <span class="val" id="v-step">0</span></label>
   <input type="range" id="step-x" min="-20" max="40" step="1" value="0" />
+  <label>Второй боец: шаг навстречу, см <span class="val" id="v-step2">0</span></label>
+  <input type="range" id="step-2" min="-40" max="20" step="1" value="0" />
+  <label><input type="checkbox" id="second" checked /> второй боец напротив</label>
+  <label><input type="checkbox" id="contact" /> цель — второй боец, без груши</label>
+  <label><input type="checkbox" id="guard" /> второй держит блок</label>
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
   <label>Упругость удара <span class="val" id="v-strike-rest">0.25</span></label>
@@ -106,6 +111,7 @@
   <input type="range" id="rise" min="20" max="300" step="10" value="20" />
   </details>
   <button id="punch">Удар</button>
+  <button id="clinch">Толчок в клинче</button>
   <button id="series">Серия, 10</button>
   <label>Тренировка</label>
   <select id="train-type">
@@ -148,9 +154,17 @@
   <div class="row"><span class="dim">Шкала своей кисти</span><b id="d-handdamage">—</b></div>
   <div class="row"><span class="dim">Набитость кисти</span><b id="d-handcond">×1.00</b></div>
   <div class="row"><span class="dim">Набитость зоны цели</span><b id="d-zonecond">×1.00</b></div>
+  <div class="row"><span class="dim">Дистанция между бойцами</span><b id="d-distance">—</b></div>
+  <h2 style="margin-top:10px">Контакт двух тел</h2>
+  <div class="row"><span class="dim">Чем встретились</span><b id="c-parts">—</b></div>
+  <div class="row"><span class="dim">Скорость сближения</span><b id="c-approach">—</b></div>
+  <div class="row"><span class="dim">Импульс движка</span><b id="c-engine">—</b></div>
+  <div class="row"><span class="dim">Импульс формулы</span><b id="c-formula">—</b></div>
+  <div class="row"><span class="dim">Расхождение</span><b id="c-diverge">—</b></div>
+  <div class="row"><span class="dim">Пиковая сила контакта</span><b id="c-peak">—</b></div>
 </div>
 
-<div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
+<div id="hint">Пятнадцать модулей, настоящие массы. Тело стоит само — на равновесии, а не на склейке. Бойцов двое: второй стоит напротив, развёрнутый, со своим равновесием и своим шагом. Удар считается формулой в момент касания, груша его проверяет. Ползунки слева меняют тело и толчок, справа — что из этого следует.</div>
 
 <script>
 (function() {
@@ -34981,6 +34995,7 @@ void main() {
 	var ARM_BACK_X = -.13;
 	var ARM_FRONT_X = .13;
 	var ARM_Z = .28;
+	var SECOND_X = 1.55;
 	var BAG = {
 		x: .62,
 		topY: 1.05,
@@ -34997,6 +35012,11 @@ void main() {
 	var solidModules = false;
 	var applyAnalytic = true;
 	var opponentX = 0;
+	var bagHidden = false;
+	var oppContact = false;
+	var guard = null;
+	var press = null;
+	var COLLIDER_INFO = /* @__PURE__ */ new Map();
 	var STRIKE = {
 		restitution: .25,
 		contactMs: 8
@@ -35068,9 +35088,24 @@ void main() {
 		gain: 1.5,
 		capacityGain: .5
 	};
-	function makeFighter(id) {
+	function makeFighter(id, place, swayPhase) {
 		return {
 			id,
+			place: place || {
+				x: 0,
+				turn: 0
+			},
+			swayPhase: swayPhase || 0,
+			bodies: {},
+			joints: {},
+			meshes: {},
+			balance: {
+				ref: 0,
+				prev: 0,
+				err: 0,
+				vel: 0,
+				work: 0
+			},
 			stamina: {
 				arm: 1,
 				legs: 1
@@ -35081,12 +35116,23 @@ void main() {
 			reserve: 1
 		};
 	}
-	var P1 = makeFighter("p1");
-	var P2 = makeFighter("p2");
+	var P1 = makeFighter("p1", {
+		x: 0,
+		turn: 0
+	}, 0);
+	var P2 = makeFighter("p2", {
+		x: SECOND_X,
+		turn: Math.PI
+	}, Math.PI / 2);
 	var condition = P1.condition;
 	var damage = P1.damage;
 	var broken = P1.broken;
 	var stamina = P1.stamina;
+	var secondFighter = true;
+	var secondX = SECOND_X;
+	function activeFighters() {
+		return secondFighter ? [P1, P2] : [P1];
+	}
 	var GROUPS = {
 		world: 65537,
 		bag: 131073,
@@ -35099,6 +35145,11 @@ void main() {
 		stiffness: document.getElementById("stiffness"),
 		bend: document.getElementById("bend"),
 		stepX: document.getElementById("step-x"),
+		step2: document.getElementById("step-2"),
+		second: document.getElementById("second"),
+		contact: document.getElementById("contact"),
+		guard: document.getElementById("guard"),
+		clinch: document.getElementById("clinch"),
 		legs: document.getElementById("legs"),
 		targetStructure: document.getElementById("target-structure"),
 		zone: document.getElementById("zone"),
@@ -35113,6 +35164,7 @@ void main() {
 		vStiff: document.getElementById("v-stiff"),
 		vBend: document.getElementById("v-bend"),
 		vStep: document.getElementById("v-step"),
+		vStep2: document.getElementById("v-step2"),
 		vLegs: document.getElementById("v-legs"),
 		vStrikeRest: document.getElementById("v-strike-rest"),
 		vStrikeTime: document.getElementById("v-strike-time"),
@@ -35148,7 +35200,14 @@ void main() {
 		dZoneDamage: document.getElementById("d-zonedamage"),
 		dHandDamage: document.getElementById("d-handdamage"),
 		dHandCond: document.getElementById("d-handcond"),
-		dZoneCond: document.getElementById("d-zonecond")
+		dZoneCond: document.getElementById("d-zonecond"),
+		dDistance: document.getElementById("d-distance"),
+		cParts: document.getElementById("c-parts"),
+		cApproach: document.getElementById("c-approach"),
+		cEngine: document.getElementById("c-engine"),
+		cFormula: document.getElementById("c-formula"),
+		cDiverge: document.getElementById("c-diverge"),
+		cPeak: document.getElementById("c-peak")
 	};
 	var renderer = new WebGLRenderer({ antialias: true });
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -35168,6 +35227,7 @@ void main() {
 		camera.bottom = -halfHeight;
 		camera.left = -halfHeight * aspect;
 		camera.right = halfHeight * aspect;
+		camera.position.set(secondFighter ? .78 : .22, .9, 12);
 		camera.updateProjectionMatrix();
 		renderer.setSize(window.innerWidth, window.innerHeight);
 	}
@@ -35195,6 +35255,8 @@ void main() {
 	var bodies = {};
 	var joints = {};
 	var meshes = {};
+	var sceneMeshes = [];
+	var buildRegister = false;
 	var bagMaterial = null;
 	var bagBodyRef = null;
 	var bagCollider = null;
@@ -35259,11 +35321,7 @@ void main() {
 	var driveTotal = 0;
 	var comStart = 0;
 	var jointContactsOn = false;
-	var comRef = 0;
-	var comPrev = 0;
 	var balanceWork = 0;
-	var balErr = 0;
-	var balVel = 0;
 	var muscleBase = 6e3;
 	var MESH_BODY = {
 		hand_front: "forearm_front",
@@ -35549,8 +35607,16 @@ void main() {
 		if (o.collisionEvents) desc.setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS);
 		else desc.setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS);
 		const collider = world.createCollider(desc, body);
-		if (o.module) MODULE_BY_COLLIDER.set(collider.handle, o.module);
-		else if (o.sensor) MODULE_BY_COLLIDER.set(collider.handle, "hand");
+		if (buildRegister) {
+			if (o.module) MODULE_BY_COLLIDER.set(collider.handle, o.module);
+			else if (o.sensor) MODULE_BY_COLLIDER.set(collider.handle, "hand");
+		}
+		if (o.fighter) COLLIDER_INFO.set(collider.handle, {
+			fighter: o.fighter,
+			module: o.module || (o.sensor ? "hand" : null),
+			part: o.part || o.module || (o.sensor ? "hand" : null),
+			body
+		});
 		return collider;
 	}
 	function makeMesh(w, h, d, ox, oy, material) {
@@ -35558,40 +35624,37 @@ void main() {
 		geo.translate(0, oy, 0);
 		return new Mesh(geo, material);
 	}
+	function applyPose(pose) {
+		if (!pose) return;
+		const f = pose.fighter === "p2" ? P2 : P1;
+		const p = params();
+		const k = pose.stiffness === void 0 ? 1 : pose.stiffness;
+		const stiff = p.muscle * p.stance * 2 * k;
+		const damp = Math.sqrt(p.muscle / 900) * 60 * p.stance;
+		const shoulder = f.joints["shoulder_" + pose.side];
+		const elbow = f.joints["elbow_" + pose.side];
+		if (shoulder) shoulder.configureMotorPosition(pose.shoulder || 0, stiff, damp);
+		if (elbow) elbow.configureMotorPosition(pose.elbow || 0, stiff, damp);
+	}
 	function build() {
-		for (const m of Object.values(meshes)) if (m) {
+		for (const m of sceneMeshes) if (m) {
 			scene.remove(m);
-			m.geometry.dispose();
+			if (m.geometry) m.geometry.dispose();
 		}
-		meshes = {};
+		sceneMeshes = [];
+		for (const f of [P1, P2]) {
+			f.bodies = {};
+			f.joints = {};
+			f.meshes = {};
+		}
 		bodies = {};
 		joints = {};
+		meshes = {};
 		lastHand = null;
 		lastHandVel = null;
+		handCollider = null;
 		MODULE_BY_COLLIDER.clear();
-		const p = params();
-		const L = {
-			head: zoneLen("head", 1),
-			chest: zoneLen("chest", 1),
-			abdomen: zoneLen("abdomen", 1),
-			upperArm: zoneLen("upperArm", p.lenMul),
-			forearm: zoneLen("forearm", p.lenMul),
-			hand: zoneLen("hand", p.lenMul),
-			thigh: zoneLen("thigh", 1),
-			shin: zoneLen("shin", 1),
-			foot: zoneLen("foot", 1)
-		};
-		const M = {
-			head: zoneMass("head", 1),
-			chest: zoneMass("chest", 1),
-			abdomen: zoneMass("abdomen", 1),
-			upperArm: zoneMass("upperArm", p.massMul),
-			forearm: zoneMass("forearm", p.massMul),
-			hand: zoneMass("hand", p.massMul),
-			thigh: zoneMass("thigh", 1),
-			shin: zoneMass("shin", 1),
-			foot: zoneMass("foot", 1)
-		};
+		COLLIDER_INFO.clear();
 		world = new Og.World({
 			x: 0,
 			y: -9.81,
@@ -35605,11 +35668,141 @@ void main() {
 		const groundMesh = new Mesh(new BoxGeometry(16, .1, 1), matGround);
 		groundMesh.position.set(0, -.05, 0);
 		scene.add(groundMesh);
+		sceneMeshes.push(groundMesh);
+		P1.place.x = stanceX;
+		buildBody(P1, {
+			sensorHand: !solidModules,
+			handGroups: GROUPS.hand,
+			measured: true
+		});
+		if (secondFighter) {
+			P2.place.x = secondX;
+			buildBody(P2, {
+				sensorHand: false,
+				handGroups: GROUPS.world,
+				measured: false
+			});
+		}
+		bodies = P1.bodies;
+		joints = P1.joints;
+		meshes = P1.meshes;
 		meshes.ground = groundMesh;
-		const T = .1;
+		const p = params();
+		const L = {
+			head: zoneLen("head", 1),
+			chest: zoneLen("chest", 1),
+			abdomen: zoneLen("abdomen", 1),
+			upperArm: zoneLen("upperArm", p.lenMul),
+			forearm: zoneLen("forearm", p.lenMul),
+			hand: zoneLen("hand", p.lenMul),
+			thigh: zoneLen("thigh", 1),
+			shin: zoneLen("shin", 1),
+			foot: zoneLen("foot", 1)
+		};
 		if (bagPhase > 0) bagX = ARM_FRONT_X + (L.upperArm + L.forearm + L.hand) * Math.sin(bagPhase) + BAG.hx;
 		else bagX = BAG.x;
 		bagX += opponentX;
+		bagMaterial = null;
+		meshes.bag = null;
+		bagBodyRef = null;
+		bagCollider = null;
+		if (!bagHidden) {
+			const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(bagX, BAG.topY, 0));
+			const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(bagX, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
+			targetMass = targetFromZone ? ZONE[p.zone].frac * BODY_MASS * (PAIRED_ZONES.includes(p.zone) ? 2 : 1) : BAG.mass;
+			bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, targetMass, {
+				friction: .8,
+				restitution: .2,
+				collisionEvents: true,
+				groups: GROUPS.bag
+			});
+			const bagJoint = Og.JointData.revolute({
+				x: 0,
+				y: 0,
+				z: 0
+			}, {
+				x: 0,
+				y: BAG.hy,
+				z: 0
+			}, {
+				x: 0,
+				y: 0,
+				z: 1
+			});
+			world.createImpulseJoint(bagJoint, anchor, bagBody, true);
+			bagMaterial = matPad.clone();
+			meshes.bag = new Mesh(new BoxGeometry(BAG.hx * 2, BAG.hy * 2, BAG.hz * 2), bagMaterial);
+			meshes.bag.position.set(bagX, BAG.topY - BAG.hy, 0);
+			scene.add(meshes.bag);
+			sceneMeshes.push(meshes.bag);
+			bodies.bag = bagBody;
+			bagBodyRef = bagBody;
+		}
+		applyPose(guard);
+		applyPose(press);
+		bodyStartX = bodies.abdomen.translation().x;
+		for (const f of activeFighters()) {
+			f.balance.ref = fighterComX(f);
+			f.balance.prev = f.balance.ref;
+			f.balance.err = 0;
+			f.balance.vel = 0;
+		}
+		resetMeasure();
+		updateDerived();
+		exposeDiagnostics();
+	}
+	function buildBody(f, opts) {
+		const p = params();
+		const X = f.place.x;
+		const turn = !!f.place.turn;
+		const bodiesF = f.bodies;
+		const jointsF = f.joints;
+		const meshesF = f.meshes;
+		const P = (x, y, z) => turn ? [
+			X - x,
+			y,
+			-z
+		] : [
+			x + X,
+			y,
+			z
+		];
+		const Q = (q) => turn ? {
+			x: q.z,
+			y: q.w,
+			z: -q.x,
+			w: -q.y
+		} : q;
+		const put = (key, mesh) => {
+			meshesF[key] = mesh;
+			scene.add(mesh);
+			sceneMeshes.push(mesh);
+			return mesh;
+		};
+		buildRegister = !!opts.measured;
+		const M = {
+			head: zoneMass("head", 1),
+			chest: zoneMass("chest", 1),
+			abdomen: zoneMass("abdomen", 1),
+			upperArm: zoneMass("upperArm", p.massMul),
+			forearm: zoneMass("forearm", p.massMul),
+			hand: zoneMass("hand", p.massMul),
+			thigh: zoneMass("thigh", 1),
+			shin: zoneMass("shin", 1),
+			foot: zoneMass("foot", 1)
+		};
+		const L = {
+			head: zoneLen("head", 1),
+			chest: zoneLen("chest", 1),
+			abdomen: zoneLen("abdomen", 1),
+			upperArm: zoneLen("upperArm", p.lenMul),
+			forearm: zoneLen("forearm", p.lenMul),
+			hand: zoneLen("hand", p.lenMul),
+			thigh: zoneLen("thigh", 1),
+			shin: zoneLen("shin", 1),
+			foot: zoneLen("foot", 1)
+		};
+		const T = .1;
 		const dampLimb = p.structure === void 0 ? .1 : structureOf(p).damping;
 		const bend = Math.max(0, Math.min(p.bend, .9 * Math.min(L.thigh, L.shin)));
 		const aThigh = Math.asin(Math.min(.99, bend / L.thigh));
@@ -35625,54 +35818,82 @@ void main() {
 		});
 		for (const side of ["back", "front"]) {
 			const x = side === "back" ? LEG_BACK_X : LEG_FRONT_X;
-			const foot = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(x, Y.ankle, 0));
-			addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot);
-			meshes["foot_" + side] = makeMesh(L.foot, .09, T * 2, L.foot / 2 - .06, -.035, matLimbs);
-			scene.add(meshes["foot_" + side]);
-			const shin = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, kneeY, 0).setRotation(quatZ(aShin)).setLinearDamping(.2).setAngularDamping(.2));
-			addBox(shin, T, L.shin / 2, T, 0, -L.shin / 2, M.shin);
-			meshes["shin_" + side] = makeMesh(T * 2, L.shin, T * 2, 0, -L.shin / 2, matLimbs);
-			scene.add(meshes["shin_" + side]);
-			const thigh = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, hipY, 0).setRotation(quatZ(aThigh)).setLinearDamping(.2).setAngularDamping(.2));
-			addBox(thigh, T * 1.15, L.thigh / 2, T * 1.15, 0, -L.thigh / 2, M.thigh);
-			meshes["thigh_" + side] = makeMesh(T * 2.3, L.thigh, T * 2.3, 0, -L.thigh / 2, matLimbs);
-			scene.add(meshes["thigh_" + side]);
-			bodies["foot_" + side] = foot;
-			bodies["shin_" + side] = shin;
-			bodies["thigh_" + side] = thigh;
+			const foot = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0))));
+			addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot, {
+				fighter: f.id,
+				module: "foot",
+				part: "foot_" + side
+			});
+			put("foot_" + side, makeMesh(L.foot, .09, T * 2, L.foot / 2 - .06, -.035, matLimbs));
+			const shin = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(x, kneeY, 0)).setRotation(Q(quatZ(aShin))).setLinearDamping(.2).setAngularDamping(.2));
+			addBox(shin, T, L.shin / 2, T, 0, -L.shin / 2, M.shin, {
+				fighter: f.id,
+				module: "shin",
+				part: "shin_" + side
+			});
+			put("shin_" + side, makeMesh(T * 2, L.shin, T * 2, 0, -L.shin / 2, matLimbs));
+			const thigh = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(x, hipY, 0)).setRotation(Q(quatZ(aThigh))).setLinearDamping(.2).setAngularDamping(.2));
+			addBox(thigh, T * 1.15, L.thigh / 2, T * 1.15, 0, -L.thigh / 2, M.thigh, {
+				fighter: f.id,
+				module: "thigh",
+				part: "thigh_" + side
+			});
+			put("thigh_" + side, makeMesh(T * 2.3, L.thigh, T * 2.3, 0, -L.thigh / 2, matLimbs));
+			bodiesF["foot_" + side] = foot;
+			bodiesF["shin_" + side] = shin;
+			bodiesF["thigh_" + side] = thigh;
 		}
-		const abdomen = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.hip + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
-		addBox(abdomen, T * 1.5, L.abdomen / 2, T * 1.5, 0, L.abdomen / 2, M.abdomen);
-		meshes.abdomen = makeMesh(T * 3, L.abdomen, T * 3, 0, L.abdomen / 2, matBody);
-		scene.add(meshes.abdomen);
-		bodies.abdomen = abdomen;
-		const chest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.waist + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
-		addBox(chest, T * 1.7, L.chest / 2, T * 1.7, 0, L.chest / 2, M.chest);
-		meshes.chest = makeMesh(T * 3.4, L.chest, T * 3.4, 0, L.chest / 2, matBody);
-		scene.add(meshes.chest);
-		bodies.chest = chest;
-		const head = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(0, Y.chestTop + dy, 0).setLinearDamping(.2).setAngularDamping(.2));
-		addBox(head, .11, L.head / 2, T * 1.1, 0, L.head / 2, M.head);
-		meshes.head = makeMesh(.22, L.head, T * 2.2, 0, L.head / 2, matBody);
-		scene.add(meshes.head);
-		bodies.head = head;
+		const abdomen = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(0, Y.hip + dy, 0)).setRotation(Q(quatZ(0))).setLinearDamping(.2).setAngularDamping(.2));
+		addBox(abdomen, T * 1.5, L.abdomen / 2, T * 1.5, 0, L.abdomen / 2, M.abdomen, {
+			fighter: f.id,
+			module: "abdomen",
+			part: "abdomen"
+		});
+		put("abdomen", makeMesh(T * 3, L.abdomen, T * 3, 0, L.abdomen / 2, matBody));
+		bodiesF.abdomen = abdomen;
+		const chest = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(0, Y.waist + dy, 0)).setRotation(Q(quatZ(0))).setLinearDamping(.2).setAngularDamping(.2));
+		addBox(chest, T * 1.7, L.chest / 2, T * 1.7, 0, L.chest / 2, M.chest, {
+			fighter: f.id,
+			module: "chest",
+			part: "chest"
+		});
+		put("chest", makeMesh(T * 3.4, L.chest, T * 3.4, 0, L.chest / 2, matBody));
+		bodiesF.chest = chest;
+		const head = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(0, Y.chestTop + dy, 0)).setRotation(Q(quatZ(0))).setLinearDamping(.2).setAngularDamping(.2));
+		addBox(head, .11, L.head / 2, T * 1.1, 0, L.head / 2, M.head, {
+			fighter: f.id,
+			module: "head",
+			part: "head"
+		});
+		put("head", makeMesh(.22, L.head, T * 2.2, 0, L.head / 2, matBody));
+		bodiesF.head = head;
 		for (const side of ["back", "front"]) {
 			const ax = side === "back" ? ARM_BACK_X : ARM_FRONT_X;
 			const armZ = side === "front" ? ARM_Z : -.28;
-			const upper = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder + dy, armZ).setLinearDamping(dampLimb).setAngularDamping(dampLimb));
-			addBox(upper, T * .85, L.upperArm / 2, T * .85, 0, -L.upperArm / 2, M.upperArm);
-			meshes["upperArm_" + side] = makeMesh(T * 1.7, L.upperArm, T * 1.7, 0, -L.upperArm / 2, matLimbs);
-			scene.add(meshes["upperArm_" + side]);
-			const fore = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(ax, Y.shoulder - L.upperArm + dy, armZ).setLinearDamping(dampLimb).setAngularDamping(dampLimb));
-			addBox(fore, T * .75, L.forearm / 2, T * .75, 0, -L.forearm / 2, M.forearm);
+			const upper = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(ax, Y.shoulder + dy, armZ)).setRotation(Q(quatZ(0))).setLinearDamping(dampLimb).setAngularDamping(dampLimb));
+			addBox(upper, T * .85, L.upperArm / 2, T * .85, 0, -L.upperArm / 2, M.upperArm, {
+				fighter: f.id,
+				module: "upperArm",
+				part: "upperArm_" + side
+			});
+			put("upperArm_" + side, makeMesh(T * 1.7, L.upperArm, T * 1.7, 0, -L.upperArm / 2, matLimbs));
+			const fore = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(...P(ax, Y.shoulder - L.upperArm + dy, armZ)).setRotation(Q(quatZ(0))).setLinearDamping(dampLimb).setAngularDamping(dampLimb));
+			addBox(fore, T * .75, L.forearm / 2, T * .75, 0, -L.forearm / 2, M.forearm, {
+				fighter: f.id,
+				module: "forearm",
+				part: "forearm_" + side
+			});
 			const handOffset = -(L.forearm + L.hand / 2);
 			const handShape = addBox(fore, T * .7, L.hand / 2, T * .7, 0, handOffset, M.hand, {
 				restitution: .15,
-				sensor: side === "front" && !solidModules,
+				sensor: side === "front" && !!opts.sensorHand,
 				collisionEvents: true,
-				groups: side === "front" ? GROUPS.hand : GROUPS.world
+				groups: side === "front" ? opts.handGroups : GROUPS.world,
+				fighter: f.id,
+				module: "hand",
+				part: "hand_" + side
 			});
-			if (side === "front") {
+			if (side === "front" && opts.measured) {
 				handCollider = handShape;
 				handHalf = {
 					x: T * .7,
@@ -35680,11 +35901,10 @@ void main() {
 					z: T * .7
 				};
 			}
-			meshes["forearm_" + side] = makeMesh(T * 1.5, L.forearm, T * 1.5, 0, -L.forearm / 2, matLimbs);
-			meshes["hand_" + side] = makeMesh(T * 1.4, L.hand, T * 1.4, 0, handOffset, matLimbs);
-			scene.add(meshes["forearm_" + side], meshes["hand_" + side]);
-			bodies["upperArm_" + side] = upper;
-			bodies["forearm_" + side] = fore;
+			put("forearm_" + side, makeMesh(T * 1.5, L.forearm, T * 1.5, 0, -L.forearm / 2, matLimbs));
+			put("hand_" + side, makeMesh(T * 1.4, L.hand, T * 1.4, 0, handOffset, matLimbs));
+			bodiesF["upperArm_" + side] = upper;
+			bodiesF["forearm_" + side] = fore;
 		}
 		const stiff = p.muscle * p.stance;
 		const damp = Math.sqrt(p.muscle / 900) * 60 * p.stance;
@@ -35702,10 +35922,10 @@ void main() {
 		}
 		for (const side of ["back", "front"]) {
 			const x = side === "back" ? LEG_BACK_X : LEG_FRONT_X;
-			const ankleBody = bodies["foot_" + side];
-			const shin = bodies["shin_" + side];
-			const thigh = bodies["thigh_" + side];
-			joints["ankle_" + side] = hinge(ankleBody, {
+			const ankleBody = bodiesF["foot_" + side];
+			const shin = bodiesF["shin_" + side];
+			const thigh = bodiesF["thigh_" + side];
+			jointsF["ankle_" + side] = hinge(ankleBody, {
 				x: 0,
 				y: 0,
 				z: 0
@@ -35714,7 +35934,7 @@ void main() {
 				y: -L.shin,
 				z: 0
 			}, stiff * .2, damp * .45, -aShin);
-			joints["knee_" + side] = hinge(shin, {
+			jointsF["knee_" + side] = hinge(shin, {
 				x: 0,
 				y: 0,
 				z: 0
@@ -35723,7 +35943,7 @@ void main() {
 				y: -L.thigh,
 				z: 0
 			}, stiff * 4, damp * 2, -(aThigh - aShin));
-			joints["hip_" + side] = hinge(thigh, {
+			jointsF["hip_" + side] = hinge(thigh, {
 				x: 0,
 				y: 0,
 				z: 0
@@ -35733,7 +35953,7 @@ void main() {
 				z: 0
 			}, stiff * 6, damp * 2.5, aThigh);
 		}
-		joints.spine = hinge(abdomen, {
+		jointsF.spine = hinge(abdomen, {
 			x: 0,
 			y: L.abdomen,
 			z: 0
@@ -35742,7 +35962,7 @@ void main() {
 			y: 0,
 			z: 0
 		}, stiff * 1.6, damp * 1.6);
-		joints.neck = hinge(chest, {
+		jointsF.neck = hinge(chest, {
 			x: 0,
 			y: L.chest,
 			z: 0
@@ -35756,74 +35976,26 @@ void main() {
 			const shoulderStiff = side === "front" ? 0 : stiff * .5;
 			const elbowStiff = side === "front" ? stiff * p.massMul : stiff * .4;
 			const armZ = side === "front" ? ARM_Z : -.28;
-			joints["shoulder_" + side] = hinge(chest, {
+			jointsF["shoulder_" + side] = hinge(chest, {
 				x: ax,
 				y: Y.shoulder - Y.waist,
 				z: armZ
-			}, bodies["upperArm_" + side], {
+			}, bodiesF["upperArm_" + side], {
 				x: 0,
 				y: 0,
 				z: 0
 			}, shoulderStiff, damp * .5);
-			joints["elbow_" + side] = hinge(bodies["upperArm_" + side], {
+			jointsF["elbow_" + side] = hinge(bodiesF["upperArm_" + side], {
 				x: 0,
 				y: -L.upperArm,
 				z: 0
-			}, bodies["forearm_" + side], {
+			}, bodiesF["forearm_" + side], {
 				x: 0,
 				y: 0,
 				z: 0
 			}, elbowStiff, damp * .4);
 		}
-		const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(bagX, BAG.topY, 0));
-		const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(bagX, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
-		targetMass = targetFromZone ? ZONE[p.zone].frac * BODY_MASS * (PAIRED_ZONES.includes(p.zone) ? 2 : 1) : BAG.mass;
-		bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, targetMass, {
-			friction: .8,
-			restitution: .2,
-			collisionEvents: true,
-			groups: GROUPS.bag
-		});
-		const bagJoint = Og.JointData.revolute({
-			x: 0,
-			y: 0,
-			z: 0
-		}, {
-			x: 0,
-			y: BAG.hy,
-			z: 0
-		}, {
-			x: 0,
-			y: 0,
-			z: 1
-		});
-		world.createImpulseJoint(bagJoint, anchor, bagBody, true);
-		bagMaterial = matPad.clone();
-		meshes.bag = new Mesh(new BoxGeometry(BAG.hx * 2, BAG.hy * 2, BAG.hz * 2), bagMaterial);
-		meshes.bag.position.set(bagX, BAG.topY - BAG.hy, 0);
-		scene.add(meshes.bag);
-		bodies.bag = bagBody;
-		bagBodyRef = bagBody;
-		bodyStartX = abdomen.translation().x;
-		if (stanceX) {
-			for (const b of Object.values(bodies)) {
-				if (!b || b === bagBodyRef) continue;
-				const t = b.translation();
-				b.setTranslation({
-					x: t.x + stanceX,
-					y: t.y,
-					z: t.z
-				}, false);
-			}
-			bodyStartX += stanceX;
-		}
-		comRef = bodyComX();
-		comPrev = comRef;
-		balErr = 0;
-		balVel = 0;
-		resetMeasure();
-		updateDerived();
-		exposeDiagnostics();
+		buildRegister = false;
 	}
 	function resetMeasure() {
 		measure.maxSpeed = 0;
@@ -35862,6 +36034,7 @@ void main() {
 		measure.comShift = 0;
 		measure.bodyTravel = 0;
 		measure.everContacted = false;
+		resetOpp();
 		for (const el of [
 			ui.rSpeed,
 			ui.rEffMass,
@@ -35947,7 +36120,8 @@ void main() {
 			contactY: measure.contactAt ? measure.contactAt.y : 0,
 			bodyTravel: measure.bodyTravel,
 			contacted: measure.everContacted,
-			struck: measure.strikeApplied
+			struck: measure.strikeApplied,
+			opp: oppSummary()
 		};
 	}
 	function runPunchSync(seconds) {
@@ -36032,6 +36206,31 @@ void main() {
 			out.momentumError = Math.abs(p1 - p0) / Math.max(1e-4, Math.abs(p0));
 			world.removeRigidBody(a);
 			world.removeRigidBody(b);
+			const freeAt = (x, vx) => {
+				const body = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(x, 3, 0).setGravityScale(0).setLinvel(vx, 0, 0));
+				return {
+					body,
+					col: world.createCollider(Og.ColliderDesc.cuboid(.1, .1, .1).setMass(1).setRestitution(.5).setFriction(0).setCollisionGroups(GROUPS.world).setActiveEvents(Og.ActiveEvents.COLLISION_EVENTS), body)
+				};
+			};
+			const fa = freeAt(2.5, 1.5);
+			const fb = freeAt(3.5, 0);
+			let impulseSum = 0;
+			for (let i = 0; i < Math.round(.6 / dt); i++) {
+				world.step(eventQueue);
+				world.narrowPhase.contactPair(fa.col.handle, fb.col.handle, (manifold) => {
+					for (let k = 0; k < manifold.numContacts(); k++) {
+						const imp = manifold.contactImpulse(k);
+						if (imp > 0) impulseSum += imp;
+					}
+				});
+			}
+			out.contactImpulseSum = impulseSum;
+			out.contactMomentumB = fb.body.mass() * fb.body.linvel().x;
+			out.contactExpected = 1.125;
+			out.contactRelError = Math.abs(impulseSum - out.contactExpected) / out.contactExpected;
+			world.removeRigidBody(fa.body);
+			world.removeRigidBody(fb.body);
 			return out;
 		}
 		window.__stand = {
@@ -36065,6 +36264,123 @@ void main() {
 				p1: P1,
 				p2: P2
 			},
+			setSecondFighter: (on) => {
+				secondFighter = !!on;
+				build();
+				fitCamera();
+				return secondFighter;
+			},
+			readSecondFighter: () => secondFighter,
+			setSecondStep: (x) => {
+				secondX = x;
+				build();
+				return secondX;
+			},
+			stepSecond: (dx) => {
+				secondX += dx;
+				build();
+				return secondX;
+			},
+			readSecondStep: () => secondX,
+			setContactTarget: (mode) => {
+				const on = mode === "opponent";
+				bagHidden = on;
+				oppContact = on;
+				if (on) {
+					solidModules = true;
+					applyAnalytic = false;
+				}
+				build();
+				return on ? "opponent" : "bag";
+			},
+			readContactTarget: () => bagHidden ? "opponent" : "bag",
+			setGuard: (pose) => {
+				guard = pose ? {
+					fighter: "p2",
+					side: pose.side || "back",
+					shoulder: pose.shoulder,
+					elbow: pose.elbow,
+					stiffness: pose.stiffness
+				} : null;
+				build();
+				return guard;
+			},
+			setPress: (pose) => {
+				press = pose ? {
+					fighter: "p1",
+					side: pose.side || "front",
+					shoulder: pose.shoulder,
+					elbow: pose.elbow,
+					stiffness: pose.stiffness
+				} : null;
+				build();
+				return press;
+			},
+			contact: () => oppSummary(),
+			resetContact: () => {
+				resetOpp();
+				return oppSummary();
+			},
+			clinch: clinchRun,
+			handTrace: (seconds, samples) => {
+				build();
+				settle(SETTLE_SECONDS);
+				freeze();
+				resetMeasure();
+				startPush();
+				const dt = world.timestep;
+				const total = Math.max(1, Math.round((seconds || .4) / dt));
+				const every = Math.max(1, Math.round(total / Math.max(1, samples || 12)));
+				const out = [];
+				for (let i = 0; i <= total; i++) {
+					if (i % every === 0) {
+						const h = handPoint(P1);
+						out.push({
+							t: +(i * dt).toFixed(4),
+							x: +h.x.toFixed(3),
+							y: +h.y.toFixed(3)
+						});
+					}
+					stepPhysics();
+				}
+				return out;
+			},
+			shoulder: (id, side) => shoulderPointOf(id === "p2" ? P2 : P1, side || "front"),
+			inertiaZ: (id, part) => {
+				const body = (id === "p2" ? P2 : P1).bodies[part];
+				return body ? inertiaAboutZ(body) : null;
+			},
+			readFighter: (id) => {
+				const f = id === "p2" ? P2 : P1;
+				if (!f.bodies.head) return null;
+				const at = (b) => {
+					const t = b.translation();
+					return {
+						x: +t.x.toFixed(4),
+						y: +t.y.toFixed(4)
+					};
+				};
+				return {
+					id: f.id,
+					present: activeFighters().includes(f),
+					head: at(f.bodies.head),
+					chest: at(f.bodies.chest),
+					footFront: at(f.bodies.foot_front),
+					footBack: at(f.bodies.foot_back),
+					hand: handPoint(f),
+					comX: +fighterComX(f).toFixed(4),
+					ref: +f.balance.ref.toFixed(4),
+					balanceWork: +f.balance.work.toFixed(3)
+				};
+			},
+			distanceBetween: () => {
+				const d = distanceParts();
+				return d ? {
+					hands: +d.hands.toFixed(4),
+					chests: +d.chests.toFixed(4)
+				} : null;
+			},
+			standCheck,
 			readReserve: () => reserve,
 			decay: (sessions) => {
 				const steps = Math.max(0, sessions | 0);
@@ -36142,6 +36458,11 @@ void main() {
 			setIterations: (n) => {
 				world.numSolverIterations = n;
 			},
+			setClock: (t) => {
+				simTime = Math.max(0, t || 0);
+				return simTime;
+			},
+			readClock: () => simTime,
 			setMuscle: (k) => {
 				muscleBase = k;
 				return muscleBase;
@@ -36156,7 +36477,7 @@ void main() {
 			},
 			setJointContacts: (on) => {
 				jointContactsOn = !!on;
-				for (const j of Object.values(joints)) j.setContactsEnabled(jointContactsOn);
+				for (const f of activeFighters()) for (const j of Object.values(f.joints)) j.setContactsEnabled(jointContactsOn);
 				return jointContactsOn;
 			},
 			setMotor: (name, target, stiffness, damping) => {
@@ -36230,9 +36551,9 @@ void main() {
 		driveTotal = 0;
 		comStart = bodyComX();
 	}
-	function bodyComX() {
+	function fighterComX(f) {
 		let m = 0, mx = 0;
-		for (const b of Object.values(bodies)) {
+		for (const b of Object.values(f.bodies)) {
 			if (!b || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
 			const c = b.worldCom();
 			const mass = b.mass();
@@ -36241,28 +36562,123 @@ void main() {
 		}
 		return m > 0 ? mx / m : 0;
 	}
-	function balanceStep(dt) {
-		const com = bodyComX();
-		const sway = SWAY.amp * Math.sin(2 * Math.PI * SWAY.freq * simTime);
-		const err = com - (comRef + sway);
-		measure.sway = sway;
-		measure.swayVel = SWAY.amp * 2 * Math.PI * SWAY.freq * Math.cos(2 * Math.PI * SWAY.freq * simTime);
+	function bodyComX() {
+		return fighterComX(P1);
+	}
+	function handPoint(f) {
+		const fore = f.bodies["forearm_front"];
+		if (!fore) return null;
+		const p = params();
+		const off = -(zoneLen("forearm", p.lenMul) + zoneLen("hand", p.lenMul) / 2);
+		const t = fore.translation();
+		const r = rotateByQuat({
+			x: 0,
+			y: off,
+			z: 0
+		}, fore.rotation());
+		return {
+			x: +(t.x + r.x).toFixed(4),
+			y: +(t.y + r.y).toFixed(4)
+		};
+	}
+	function distanceParts() {
+		if (!secondFighter || !P1.bodies.chest || !P2.bodies.chest) return null;
+		const a = handPoint(P1), b = handPoint(P2);
+		return {
+			hands: Math.abs(a.x - b.x),
+			chests: Math.abs(P1.bodies.chest.translation().x - P2.bodies.chest.translation().x)
+		};
+	}
+	function standCheck(seconds) {
+		build();
+		settle(SETTLE_SECONDS);
+		freeze();
+		const list = activeFighters();
+		const rows = list.map((f) => ({
+			id: f.id,
+			ref: f.balance.ref,
+			com0: fighterComX(f),
+			maxDev: 0,
+			minHeadY: Infinity,
+			handX0: handPoint(f) ? handPoint(f).x : 0
+		}));
+		let pairSum = 0, pairMin = Infinity, pairMax = -Infinity, pairN = 0;
+		const dt = world.timestep;
+		const steps = Math.max(1, Math.round((seconds || 5) / dt));
+		const pairStart = list.length > 1 ? Math.abs(P1.bodies.chest.translation().x - P2.bodies.chest.translation().x) : 0;
+		for (let i = 0; i < steps; i++) {
+			stepPhysics();
+			for (let k = 0; k < list.length; k++) {
+				const f = list[k], r = rows[k];
+				const dev = Math.abs(fighterComX(f) - r.ref);
+				if (dev > r.maxDev) r.maxDev = dev;
+				const hy = f.bodies.head.translation().y;
+				if (hy < r.minHeadY) r.minHeadY = hy;
+			}
+			if (list.length > 1) {
+				const gap = Math.abs(P1.bodies.chest.translation().x - P2.bodies.chest.translation().x);
+				pairSum += gap;
+				pairN++;
+				if (gap < pairMin) pairMin = gap;
+				if (gap > pairMax) pairMax = gap;
+			}
+		}
+		return {
+			fighters: rows.map((r, k) => {
+				const f = list[k];
+				const com = fighterComX(f);
+				const hand = handPoint(f);
+				return {
+					id: r.id,
+					comStart: +r.com0.toFixed(4),
+					comEnd: +com.toFixed(4),
+					drift: +(com - r.com0).toFixed(4),
+					sway: +r.maxDev.toFixed(4),
+					headY: +f.bodies.head.translation().y.toFixed(4),
+					minHeadY: +r.minHeadY.toFixed(4),
+					handX: hand ? hand.x : 0,
+					handDrift: hand ? +(hand.x - r.handX0).toFixed(4) : 0,
+					balanceWork: +f.balance.work.toFixed(3)
+				};
+			}),
+			pair: list.length > 1 ? {
+				start: +pairStart.toFixed(4),
+				end: +Math.abs(P1.bodies.chest.translation().x - P2.bodies.chest.translation().x).toFixed(4),
+				mean: +(pairSum / Math.max(1, pairN)).toFixed(4),
+				min: +pairMin.toFixed(4),
+				max: +pairMax.toFixed(4)
+			} : null
+		};
+	}
+	function balanceStep(f, dt) {
+		const com = fighterComX(f);
+		const forward = f.place.turn ? -1 : 1;
+		const swayVel = SWAY.amp * 2 * Math.PI * SWAY.freq * Math.cos(2 * Math.PI * SWAY.freq * simTime + f.swayPhase);
+		const sway = SWAY.amp * Math.sin(2 * Math.PI * SWAY.freq * simTime + f.swayPhase) * forward;
+		const err = com - (f.balance.ref + sway);
+		if (f === P1) {
+			measure.sway = sway;
+			measure.swayVel = swayVel * forward;
+		}
 		const a = BALANCE.lag > 0 ? dt / (BALANCE.lag + dt) : 1;
-		balErr += (err - balErr) * a;
-		balVel += ((dt > 0 ? (com - comPrev) / dt : 0) - balVel) * a;
-		comPrev = com;
-		let torque = BALANCE.kp * balErr + BALANCE.kd * balVel;
+		const bal = f.balance;
+		bal.err += (err - bal.err) * a;
+		bal.vel += ((dt > 0 ? (com - bal.prev) / dt : 0) - bal.vel) * a;
+		bal.prev = com;
+		let torque = BALANCE.kp * bal.err + BALANCE.kd * bal.vel;
 		if (torque > BALANCE.limit) torque = BALANCE.limit;
 		if (torque < -BALANCE.limit) torque = -BALANCE.limit;
 		for (const side of ["front", "back"]) {
-			const shin = bodies["shin_" + side];
+			const shin = f.bodies["shin_" + side];
 			if (!shin) continue;
 			shin.applyTorqueImpulse({
 				x: 0,
 				y: 0,
 				z: torque * dt
 			}, true);
-			balanceWork += Math.abs(torque * shin.angvel().z) * dt;
+			const work = Math.abs(torque * shin.angvel().z) * dt;
+			bal.work += work;
+			if (f === P1) balanceWork += work;
 		}
 	}
 	function settle(seconds) {
@@ -36273,36 +36689,44 @@ void main() {
 		push.active = wasActive;
 	}
 	function freeze() {
-		for (const b of Object.values(bodies)) {
-			if (!b || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
-			b.setLinvel({
-				x: 0,
-				y: 0,
-				z: 0
-			}, false);
-			b.setAngvel({
-				x: 0,
-				y: 0,
-				z: 0
-			}, false);
+		for (const f of activeFighters()) {
+			for (const b of Object.values(f.bodies)) {
+				if (!b || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
+				b.setLinvel({
+					x: 0,
+					y: 0,
+					z: 0
+				}, false);
+				b.setAngvel({
+					x: 0,
+					y: 0,
+					z: 0
+				}, false);
+			}
+			f.balance.ref = fighterComX(f);
+			f.balance.prev = f.balance.ref;
+			f.balance.err = 0;
+			f.balance.vel = 0;
 		}
-		comRef = bodyComX();
-		comPrev = comRef;
-		balErr = 0;
-		balVel = 0;
 	}
 	function shoulderPoint() {
-		const chest = bodies.chest;
-		if (!chest) return {
+		return shoulderPointOf(P1, "front") || {
 			x: ARM_FRONT_X,
 			y: Y.shoulder,
 			z: ARM_Z
 		};
+	}
+	function shoulderPointOf(f, side) {
+		const chest = f.bodies.chest;
+		if (!chest) return null;
+		const s = side === "back" ? "back" : "front";
+		const ax = s === "back" ? ARM_BACK_X : ARM_FRONT_X;
+		const az = s === "front" ? ARM_Z : -.28;
 		const t = chest.translation();
 		const r = rotateByQuat({
-			x: ARM_FRONT_X,
+			x: ax,
 			y: Y.shoulder - Y.waist,
-			z: ARM_Z
+			z: az
 		}, chest.rotation());
 		return {
 			x: t.x + r.x,
@@ -36544,6 +36968,435 @@ void main() {
 		measure.checkPending = 1;
 		flashUntil = performance.now() + 400;
 	}
+	var opp = {
+		steps: 0,
+		impulse: 0,
+		impulseImpact: 0,
+		peakForce: 0,
+		force: 0,
+		started: false,
+		firstT: 0,
+		lastT: 0,
+		gaps: 0,
+		contactAt: 0,
+		partA: null,
+		partB: null,
+		moduleA: null,
+		moduleB: null,
+		normal: {
+			x: 1,
+			y: 0,
+			z: 0
+		},
+		point: null,
+		approach: 0,
+		hitSpeed: 0,
+		massA: 0,
+		massB: 0,
+		mEffA: 0,
+		mEffB: 0,
+		chainA: 0,
+		chainB: 0,
+		J0: 0,
+		J: 0,
+		Jchain: 0,
+		jointLoss: 1,
+		e: 0,
+		contactMs: 8,
+		pairs: {},
+		startCom: null,
+		deepest: 0,
+		normalFlips: 0,
+		speedSource: "",
+		targetStart: null,
+		targetTravel: 0,
+		strikerEnd: 0,
+		targetBody: null
+	};
+	var PREV_VEL = /* @__PURE__ */ new Map();
+	function savePrevVelocities() {
+		if (!oppContact) return;
+		PREV_VEL.clear();
+		for (const info of COLLIDER_INFO.values()) {
+			const b = info.body;
+			if (!b || PREV_VEL.has(b)) continue;
+			if (typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
+			const v = b.linvel(), w = b.angvel(), c = b.worldCom();
+			PREV_VEL.set(b, {
+				v: {
+					x: v.x,
+					y: v.y,
+					z: v.z
+				},
+				w: {
+					x: w.x,
+					y: w.y,
+					z: w.z
+				},
+				c: {
+					x: c.x,
+					y: c.y,
+					z: c.z
+				}
+			});
+		}
+	}
+	function pointVelocityPrev(body, point) {
+		const s = PREV_VEL.get(body);
+		if (!s) return pointVelocity(body, point);
+		const rx = point.x - s.c.x, ry = point.y - s.c.y, rz = point.z - s.c.z;
+		return {
+			x: s.v.x + (s.w.y * rz - s.w.z * ry),
+			y: s.v.y + (s.w.z * rx - s.w.x * rz),
+			z: s.v.z + (s.w.x * ry - s.w.y * rx)
+		};
+	}
+	function mulQuat(a, b) {
+		return {
+			x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+			y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+			z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+			w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+		};
+	}
+	function inertiaAboutZ(body) {
+		const pi = body.principalInertia();
+		const q = mulQuat(body.rotation(), body.principalInertiaLocalFrame());
+		const ex = rotateByQuat({
+			x: 1,
+			y: 0,
+			z: 0
+		}, q);
+		const ey = rotateByQuat({
+			x: 0,
+			y: 1,
+			z: 0
+		}, q);
+		const ez = rotateByQuat({
+			x: 0,
+			y: 0,
+			z: 1
+		}, q);
+		return pi.x * ex.z * ex.z + pi.y * ey.z * ey.z + pi.z * ez.z * ez.z;
+	}
+	function effectiveMass(body, point, n) {
+		const m = body.mass();
+		if (!(m > 0)) return Infinity;
+		const lever = leverZ(body.worldCom(), point, n);
+		const I = Math.max(1e-9, inertiaAboutZ(body));
+		return 1 / (1 / m + lever * lever / I);
+	}
+	function chainArmMass(f, part, point, n) {
+		if (!part) return 0;
+		const zone = part.split("_")[0];
+		if (zone !== "upperArm" && zone !== "forearm" && zone !== "hand") return 0;
+		const shoulder = shoulderPointOf(f, part.endsWith("_back") ? "back" : "front");
+		if (!shoulder) return 0;
+		const lever = Math.abs(leverZ(shoulder, point, n));
+		if (lever < 1e-4) return Infinity;
+		return armModel(params()).inertia / (lever * lever);
+	}
+	function seriousMass(value, fallback) {
+		return isFinite(value) && value > 0 ? value : fallback;
+	}
+	function collectOppContact(dt) {
+		if (!oppContact || !P1.bodies.chest || !P2.bodies.chest) return;
+		let stepImpulse = 0;
+		let best = null;
+		const worldPoint = (handle, local) => {
+			const col = world.getCollider(handle);
+			if (!col) return {
+				x: 0,
+				y: 0,
+				z: 0
+			};
+			const t = col.translation();
+			if (!local) return {
+				x: t.x,
+				y: t.y,
+				z: t.z
+			};
+			const r = rotateByQuat({
+				x: local.x,
+				y: local.y,
+				z: local.z
+			}, col.rotation());
+			return {
+				x: t.x + r.x,
+				y: t.y + r.y,
+				z: t.z + r.z
+			};
+		};
+		for (const [h, info] of COLLIDER_INFO) {
+			if (info.fighter !== P1.id) continue;
+			world.narrowPhase.contactPairsWith(h, (h2) => {
+				const t = COLLIDER_INFO.get(h2);
+				if (!t || t.fighter !== P2.id) return;
+				world.narrowPhase.contactPair(h, h2, (manifold, flipped) => {
+					const num = manifold.numContacts();
+					const raw = manifold.normal();
+					for (let i = 0; i < num; i++) {
+						const imp = manifold.contactImpulse(i);
+						if (!(imp > 0)) continue;
+						stepImpulse += imp;
+						if (!best || imp > best.impulse) {
+							const sign = flipped ? -1 : 1;
+							const point = worldPoint(flipped ? h2 : h, manifold.localContactPoint1(i));
+							best = {
+								impulse: imp,
+								normal: {
+									x: raw.x * sign,
+									y: raw.y * sign,
+									z: raw.z * sign
+								},
+								point,
+								a: info,
+								b: t
+							};
+						}
+					}
+				});
+			});
+		}
+		if (!(stepImpulse > 0)) {
+			if (opp.started) opp.gaps++;
+			return;
+		}
+		if (!best) {
+			opp.orphan = (opp.orphan || 0) + 1;
+			console.warn("контакт без пары: импульс решателя " + stepImpulse.toFixed(4));
+			return;
+		}
+		if (!opp.started) {
+			opp.started = true;
+			opp.firstT = sincePunch;
+			opp.contactAt = simTime;
+			const ca = best.a.body.worldCom(), cb = best.b.body.worldCom();
+			const geom = (cb.x - ca.x) * best.normal.x + (cb.y - ca.y) * best.normal.y;
+			let n = {
+				x: best.normal.x,
+				y: best.normal.y,
+				z: best.normal.z
+			};
+			opp.normalGeom = geom < 0 ? -1 : 1;
+			const vA = pointVelocityPrev(best.a.body, best.point);
+			const vB = pointVelocityPrev(best.b.body, best.point);
+			const rel = {
+				x: vA.x - vB.x,
+				y: vA.y - vB.y,
+				z: vA.z - vB.z
+			};
+			let close = rel.x * n.x + rel.y * n.y + rel.z * n.z;
+			if (close < 0) {
+				n = {
+					x: -n.x,
+					y: -n.y,
+					z: -n.z
+				};
+				close = -close;
+				opp.normalFlips++;
+			}
+			opp.speedSource = PREV_VEL.has(best.a.body) ? "до шага" : "после шага";
+			opp.normal = {
+				x: n.x,
+				y: n.y,
+				z: n.z
+			};
+			opp.point = {
+				x: best.point.x,
+				y: best.point.y,
+				z: best.point.z
+			};
+			opp.partA = best.a.part;
+			opp.partB = best.b.part;
+			opp.moduleA = best.a.module;
+			opp.moduleB = best.b.module;
+			opp.approach = close;
+			opp.hitSpeed = Math.hypot(vA.x, vA.y, vA.z);
+			opp.massA = best.a.body.mass();
+			opp.massB = best.b.body.mass();
+			opp.mEffA = effectiveMass(best.a.body, best.point, n);
+			opp.mEffB = effectiveMass(best.b.body, best.point, n);
+			opp.chainA = seriousMass(chainArmMass(P1, best.a.part, best.point, n), opp.mEffA);
+			opp.chainB = seriousMass(chainArmMass(P2, best.b.part, best.point, n), opp.mEffB);
+			const muRigid = opp.mEffA * opp.mEffB / (opp.mEffA + opp.mEffB);
+			const muChain = opp.chainA * opp.chainB / (opp.chainA + opp.chainB);
+			const p = params();
+			const st = structureOf(p);
+			const tt = structureOf({ structure: p.targetStructure });
+			opp.e = (st.rest + tt.rest) / 2;
+			opp.contactMs = (st.contactMs + tt.contactMs) / 2;
+			const muscleK = p.muscle * p.stance;
+			opp.jointLoss = .72 * muscleK / (muscleK + 2500);
+			const v = Math.max(0, opp.approach);
+			opp.J0 = (1 + opp.e) * muRigid * v;
+			opp.J = opp.J0 * opp.jointLoss;
+			opp.Jchain = (1 + opp.e) * muChain * v * opp.jointLoss;
+			opp.heldImpulse = (1 + opp.e) * opp.mEffA * v;
+			opp.targetBody = best.b.body;
+			const c = best.b.body.worldCom();
+			opp.targetStart = {
+				x: c.x,
+				y: c.y
+			};
+		}
+		if (opp.targetBody && opp.targetStart) {
+			const c = opp.targetBody.worldCom();
+			const travel = (c.x - opp.targetStart.x) * opp.normal.x + (c.y - opp.targetStart.y) * opp.normal.y;
+			if (travel > opp.targetTravel) opp.targetTravel = travel;
+		}
+		const va = pointVelocity(best.a.body, best.point);
+		const vb = pointVelocity(best.b.body, best.point);
+		opp.strikerEnd = (va.x - vb.x) * opp.normal.x + (va.y - vb.y) * opp.normal.y;
+		opp.steps++;
+		opp.lastT = sincePunch;
+		opp.impulse += stepImpulse;
+		if (opp.lastT - opp.firstT <= opp.contactMs / 1e3) opp.impulseImpact += stepImpulse;
+		const force = stepImpulse / dt;
+		if (force > opp.peakForce) opp.peakForce = force;
+		const span = Math.max(world.timestep, opp.lastT - opp.firstT + world.timestep);
+		opp.force = opp.impulse / span;
+		const key = opp.partA + " × " + opp.partB;
+		opp.pairs[key] = (opp.pairs[key] || 0) + 1;
+		if (stepImpulse > opp.deepest) opp.deepest = stepImpulse;
+	}
+	function oppSummary() {
+		const p1 = P1.bodies.chest ? fighterComX(P1) : 0;
+		const p2 = P2.bodies.chest ? fighterComX(P2) : 0;
+		const start = opp.startCom || {
+			p1,
+			p2
+		};
+		const rel = (engine, formula) => formula > 1e-9 ? engine / formula - 1 : NaN;
+		return {
+			contact: opp.started,
+			steps: opp.steps,
+			duration: opp.started ? opp.lastT - opp.firstT + world.timestep : 0,
+			firstT: opp.firstT,
+			engineImpulse: opp.impulse,
+			engineImpact: opp.impulseImpact,
+			peakForce: opp.peakForce,
+			meanForce: opp.force,
+			partA: opp.partA,
+			partB: opp.partB,
+			moduleA: opp.moduleA,
+			moduleB: opp.moduleB,
+			pairs: { ...opp.pairs },
+			normal: { ...opp.normal },
+			point: opp.point ? { ...opp.point } : null,
+			approach: opp.approach,
+			hitSpeed: opp.hitSpeed,
+			speedSource: opp.speedSource,
+			normalFlips: opp.normalFlips,
+			massA: opp.massA,
+			massB: opp.massB,
+			mEffA: opp.mEffA,
+			mEffB: opp.mEffB,
+			chainA: opp.chainA,
+			chainB: opp.chainB,
+			formulaRigid: opp.J0,
+			formulaStand: opp.J,
+			formulaChain: opp.Jchain,
+			formulaHeld: opp.heldImpulse,
+			e: opp.e,
+			contactMs: opp.contactMs,
+			jointLoss: opp.jointLoss,
+			targetTravel: opp.targetTravel,
+			strikerEnd: opp.strikerEnd,
+			divergenceRigid: rel(opp.impulseImpact, opp.J0),
+			divergenceStand: rel(opp.impulseImpact, opp.J),
+			divergenceHeld: rel(opp.impulseImpact, opp.heldImpulse),
+			divergenceTotal: rel(opp.impulse, opp.J0),
+			totalVsStand: rel(opp.impulse, opp.J),
+			comShiftP1: +(p1 - start.p1).toFixed(4),
+			comShiftP2: +(p2 - start.p2).toFixed(4),
+			gaps: opp.gaps
+		};
+	}
+	function clinchRun(opts) {
+		const o = opts || {};
+		const seconds = o.seconds === void 0 ? .5 : o.seconds;
+		const prevDrive = driveShare;
+		build();
+		settle(SETTLE_SECONDS);
+		freeze();
+		resetMeasure();
+		sincePunch = 0;
+		driveImpulse = 0;
+		driveTotal = 0;
+		comStart = bodyComX();
+		driveShare = {
+			arm: 0,
+			chest: .6,
+			hip: .5,
+			ankle: 1,
+			...o.drive || {}
+		};
+		push.active = true;
+		push.torque = o.armTorque === void 0 ? 0 : o.armTorque;
+		push.legTorque = (o.legForce === void 0 ? 300 : o.legForce) * LEG_LEVER;
+		push.armI = armModel(params()).inertia;
+		push.rise = o.rise === void 0 ? .05 : o.rise;
+		push.total = seconds;
+		push.elapsed = 0;
+		const dt = world.timestep;
+		const steps = Math.max(1, Math.round((seconds + .2) / dt));
+		for (let i = 0; i < steps; i++) stepPhysics();
+		push.active = false;
+		push.elapsed = 0;
+		driveShare = prevDrive;
+		return oppSummary();
+	}
+	function resetOpp() {
+		opp.steps = 0;
+		opp.impulse = 0;
+		opp.impulseImpact = 0;
+		opp.peakForce = 0;
+		opp.force = 0;
+		opp.started = false;
+		opp.firstT = 0;
+		opp.lastT = 0;
+		opp.gaps = 0;
+		opp.contactAt = 0;
+		opp.partA = null;
+		opp.partB = null;
+		opp.moduleA = null;
+		opp.moduleB = null;
+		opp.normal = {
+			x: 1,
+			y: 0,
+			z: 0
+		};
+		opp.point = null;
+		opp.approach = 0;
+		opp.hitSpeed = 0;
+		opp.massA = 0;
+		opp.massB = 0;
+		opp.mEffA = 0;
+		opp.mEffB = 0;
+		opp.chainA = 0;
+		opp.chainB = 0;
+		opp.J0 = 0;
+		opp.J = 0;
+		opp.Jchain = 0;
+		opp.jointLoss = 1;
+		opp.e = 0;
+		opp.contactMs = 8;
+		opp.pairs = {};
+		opp.deepest = 0;
+		opp.normalFlips = 0;
+		opp.normalGeom = 0;
+		opp.speedSource = "";
+		opp.targetStart = null;
+		opp.targetTravel = 0;
+		opp.strikerEnd = 0;
+		opp.targetBody = null;
+		opp.heldImpulse = 0;
+		opp.startCom = {
+			p1: fighterComX(P1),
+			p2: P2.bodies.chest ? fighterComX(P2) : 0
+		};
+	}
 	function stepPhysics() {
 		const dt = world.timestep;
 		sincePunch += dt;
@@ -36604,8 +37457,10 @@ void main() {
 		}
 		const prevHand = lastHand;
 		const prevVel = lastHandVel;
-		balanceStep(dt);
+		for (const f of activeFighters()) balanceStep(f, dt);
+		savePrevVelocities();
 		world.step(eventQueue);
+		collectOppContact(dt);
 		if (measure.checkPending && bagBodyRef) {
 			const w = bagBodyRef.angvel();
 			const bv = bagBodyRef.linvel();
@@ -36696,16 +37551,43 @@ void main() {
 		ui.dHandCond.textContent = "×" + zoneCondition("hand").toFixed(2);
 		ui.dZoneCond.textContent = "×" + zoneCondition(params().zone).toFixed(2);
 	}
-	function sync() {
-		for (const key of Object.keys(meshes)) {
+	function reportPair() {
+		if (!ui.dDistance) return;
+		const d = distanceParts();
+		ui.dDistance.textContent = d ? d.hands.toFixed(2) + " м" : "—";
+	}
+	function reportContact() {
+		if (!ui.cParts) return;
+		const s = oppSummary();
+		if (!s.contact) {
+			ui.cParts.textContent = "—";
+			ui.cApproach.textContent = "—";
+			ui.cEngine.textContent = "—";
+			ui.cFormula.textContent = "—";
+			ui.cDiverge.textContent = "—";
+			ui.cPeak.textContent = "—";
+			return;
+		}
+		ui.cParts.textContent = (s.partA || "?") + " о " + (s.partB || "?");
+		ui.cApproach.textContent = s.approach.toFixed(2) + " м/с";
+		ui.cEngine.textContent = s.engineImpact.toFixed(2) + " Н·с";
+		ui.cFormula.textContent = s.formulaStand.toFixed(2) + " Н·с";
+		ui.cDiverge.textContent = isFinite(s.divergenceStand) ? (s.divergenceStand > 0 ? "+" : "") + Math.round(s.divergenceStand * 100) + "%" : "—";
+		ui.cPeak.textContent = Math.round(s.peakForce) + " Н";
+	}
+	function syncBodies(store, map) {
+		for (const key of Object.keys(store)) {
 			if (key === "ground" || key === "pad") continue;
-			const body = bodies[MESH_BODY[key] || key];
-			if (!body || !meshes[key]) continue;
+			const body = map[MESH_BODY[key] || key];
+			if (!body || !store[key]) continue;
 			const t = body.translation();
 			const r = body.rotation();
-			meshes[key].position.set(t.x, t.y, t.z);
-			meshes[key].quaternion.set(r.x, r.y, r.z, r.w);
+			store[key].position.set(t.x, t.y, t.z);
+			store[key].quaternion.set(r.x, r.y, r.z, r.w);
 		}
+	}
+	function sync() {
+		for (const f of activeFighters()) syncBodies(f.meshes, f.bodies);
 	}
 	function animate() {
 		requestAnimationFrame(animate);
@@ -36713,6 +37595,8 @@ void main() {
 			for (let i = 0; i < 8; i++) stepPhysics();
 			sync();
 			report();
+			reportPair();
+			reportContact();
 			if (bagMaterial) bagMaterial.color.setHex(performance.now() < flashUntil ? 13214247 : 4871528);
 		}
 		renderer.render(scene, camera);
@@ -36748,6 +37632,68 @@ void main() {
 		ui.vStep.textContent = ui.stepX.value;
 		stanceX = parseFloat(ui.stepX.value) / 100;
 		build();
+	});
+	ui.step2.addEventListener("input", () => {
+		ui.vStep2.textContent = ui.step2.value;
+		secondX = SECOND_X - parseFloat(ui.step2.value) / 100;
+		build();
+	});
+	ui.second.addEventListener("change", () => {
+		secondFighter = ui.second.checked;
+		build();
+		fitCamera();
+	});
+	ui.contact.addEventListener("change", () => {
+		const on = ui.contact.checked;
+		bagHidden = on;
+		oppContact = on;
+		solidModules = on;
+		applyAnalytic = !on;
+		build();
+	});
+	ui.guard.addEventListener("change", () => {
+		guard = ui.guard.checked ? {
+			fighter: "p2",
+			side: "back",
+			shoulder: 1.2,
+			elbow: 0,
+			stiffness: 1
+		} : null;
+		build();
+	});
+	ui.clinch.addEventListener("click", () => {
+		if (!ui.contact.checked) {
+			ui.contact.checked = true;
+			bagHidden = true;
+			oppContact = true;
+			solidModules = true;
+			applyAnalytic = false;
+		}
+		if (!ui.guard.checked) {
+			ui.guard.checked = true;
+			guard = {
+				fighter: "p2",
+				side: "back",
+				shoulder: 1.2,
+				elbow: 0,
+				stiffness: 1
+			};
+		}
+		press = {
+			fighter: "p1",
+			side: "front",
+			shoulder: 1.2,
+			elbow: 0,
+			stiffness: 1
+		};
+		secondX = 1.4;
+		ui.step2.value = String(Math.round((SECOND_X - secondX) * 100));
+		ui.vStep2.textContent = ui.step2.value;
+		const s = clinchRun({
+			seconds: .5,
+			legForce: 300
+		});
+		console.log("клинч:", JSON.stringify(s));
 	});
 	ui.legs.addEventListener("input", () => {
 		ui.vLegs.textContent = ui.legs.value;
