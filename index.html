@@ -87,9 +87,9 @@
   <label><input type="checkbox" id="second-body" /> второй боец — своё тело (тяжёлое и вязкое)</label>
   <label><input type="checkbox" id="free-feet" /> первый боец на якоре (для старых замеров)</label>
   <label><input type="checkbox" id="free-feet-2" /> второй боец на якоре</label>
-  <label>Движение первого, м/с <span class="dim">(в работе)</span> <span class="val" id="v-move1">0.00</span></label>
+  <label>Движение первого, м/с <span class="val" id="v-move1">0.00</span></label>
   <input type="range" id="move1" min="-0.8" max="0.8" step="0.05" value="0" />
-  <label>Движение второго, м/с <span class="dim">(в работе)</span> <span class="val" id="v-move2">0.00</span></label>
+  <label>Движение второго, м/с <span class="val" id="v-move2">0.00</span></label>
   <input type="range" id="move2" min="-0.8" max="0.8" step="0.05" value="0" />
   <label>Толчок ног, Н <span class="val" id="v-legs">0</span></label>
   <input type="range" id="legs" min="0" max="800" step="5" value="0" />
@@ -35142,12 +35142,13 @@ void main() {
 	}, Math.PI / 2);
 	var p2Params = null;
 	var GAIT = {
-		cycle: 1.4,
+		cycle: 1.7,
 		stance: .62,
-		lift: .06,
+		lift: .04,
 		crouch: .08,
 		rail: .005,
-		arm: 5,
+		arm: .5,
+		armDamp: .004,
 		maxSpeed: 1.2
 	};
 	var VIRTUAL = {
@@ -35813,6 +35814,25 @@ void main() {
 		}
 		applyPose(guard);
 		applyPose(press);
+		for (const f of activeFighters()) {
+			f.pose = {};
+			for (const [k, b] of Object.entries(f.bodies)) {
+				if (!b) continue;
+				const t = b.translation();
+				const r = b.rotation();
+				f.pose[k] = {
+					dx: t.x - f.place.x,
+					y: t.y,
+					z: t.z,
+					r: {
+						x: r.x,
+						y: r.y,
+						z: r.z,
+						w: r.w
+					}
+				};
+			}
+		}
 		bodyStartX = bodies.abdomen.translation().x;
 		for (const f of activeFighters()) {
 			f.balance.ref = fighterComX(f);
@@ -36422,6 +36442,7 @@ void main() {
 						front: 0,
 						back: 0
 					} },
+					support: f.gait.support || 0,
 					angles: f.gait.debug ? { ...f.gait.debug } : null,
 					place: f.place.x,
 					footFront: at(f.bodies.foot_front),
@@ -36429,6 +36450,7 @@ void main() {
 					hipFront: at(f.bodies.thigh_front),
 					hipBack: at(f.bodies.thigh_back),
 					headY: +f.bodies.head.translation().y.toFixed(4),
+					hipY: +((f.bodies.thigh_front.translation().y + f.bodies.thigh_back.translation().y) / 2).toFixed(4),
 					comX: +fighterComX(f).toFixed(4)
 				};
 			},
@@ -36910,7 +36932,11 @@ void main() {
 		const walking = f.gait && f.gait.moving;
 		let walkTarget = f.gait ? f.gait.support : 0;
 		const totalLoad = f.gait ? f.gait.load.front + f.gait.load.back : 0;
-		if (walking && totalLoad > 200) walkTarget = f.gait.cop;
+		if (walking) walkTarget = f.place.x;
+		if (walking && totalLoad < 100) {
+			f.balance.err = 0;
+			f.balance.vel = 0;
+		}
 		const target = walking ? walkTarget : f.balance.ref + sway;
 		if (walking) f.balance.ref = walkTarget;
 		const err = com - target;
@@ -37363,20 +37389,21 @@ void main() {
 	}
 	function footTarget(f, side) {
 		const g = f.gait;
-		const plant = g.plant[side];
+		const bodyX = f.place.x;
+		const turn = f.place.turn ? -1 : 1;
 		if (!g.moving || Math.abs(g.v) < .02) return {
-			x: plant.x,
+			x: bodyX + g.home[side] * turn,
 			y: Y.ankle
 		};
+		const S = g.stride * Math.sign(g.v) * (f.place.turn ? -1 : 1);
 		const s = (g.phase + (side === "front" ? .5 : 0)) % 1;
 		if (s < GAIT.stance) return {
-			x: plant.x,
+			x: bodyX + S * (.5 - s / GAIT.stance),
 			y: Y.ankle
 		};
 		const u = (s - GAIT.stance) / (1 - GAIT.stance);
-		const from = g.from[side];
 		return {
-			x: from.x + (plant.x - from.x) * u,
+			x: bodyX + S * (-.5 + u),
 			y: Y.ankle + GAIT.lift * Math.sin(Math.PI * u)
 		};
 	}
@@ -37409,9 +37436,10 @@ void main() {
 		const L1 = zoneLen("thigh", 1), L2 = zoneLen("shin", 1);
 		const turn = f.place.turn ? -1 : 1;
 		const hip = thigh.translation();
+		const hipWantedY = Y.hip - GAIT.crouch;
 		const footY = target.y;
 		const dx = (target.x - hip.x) * turn;
-		const dy = footY - hip.y;
+		const dy = footY - hipWantedY;
 		let d = Math.hypot(dx, dy);
 		const maxD = (L1 + L2) * .93;
 		const minD = Math.max(.12, Math.abs(L1 - L2) + .05);
@@ -37476,27 +37504,21 @@ void main() {
 			g.phase = 0;
 			return;
 		}
+		const vWorld = v * (f.place.turn ? -1 : 1);
 		g.stride = GAIT.cycle * GAIT.stance * Math.abs(v);
-		const step = GAIT.cycle * .5 * Math.abs(v);
-		const dir = Math.sign(v);
-		const prevPhase = g.phase;
+		g.phase;
 		g.phase = (g.phase + dt / GAIT.cycle) % 1;
-		for (const side of ["front", "back"]) {
-			const off = side === "front" ? .5 : 0;
-			const a = (prevPhase + off) % 1;
-			const b = (g.phase + off) % 1;
-			if (a <= GAIT.stance && (b > GAIT.stance || b < a)) {
-				g.from[side] = {
-					x: g.plant[side].x,
-					y: Y.ankle
-				};
-				const bodyX = fighterComX(f);
-				g.plant[side] = {
-					x: bodyX + step * dir,
-					y: Y.ankle
-				};
-			}
+		const dx = vWorld * dt;
+		for (const b of Object.values(f.bodies)) {
+			if (!b) continue;
+			const t = b.translation();
+			b.setTranslation({
+				x: t.x + dx,
+				y: t.y,
+				z: t.z
+			}, true);
 		}
+		f.place.x += dx;
 		g.load = footLoads(f, dt);
 		const totalLoad = g.load.front + g.load.back;
 		const footFrontX = f.bodies.foot_front ? f.bodies.foot_front.translation().x : f.place.x;
@@ -37506,10 +37528,8 @@ void main() {
 			const inStance = (side) => {
 				return (g.phase + (side === "front" ? .5 : 0)) % 1 < GAIT.stance;
 			};
-			const wf = inStance("front") ? 1 : 0;
-			const wb = inStance("back") ? 1 : 0;
-			const sum = wf + wb;
-			g.support = sum > 0 ? (wf * g.plant.front.x + wb * g.plant.back.x) / sum : (g.plant.front.x + g.plant.back.x) / 2;
+			const feet = ["front", "back"].filter((s) => inStance(s)).map((s) => f.bodies["foot_" + s].translation().x);
+			g.support = feet.length ? feet.reduce((a, b) => a + b, 0) / feet.length : fighterComX(f);
 		}
 		const p = fighterParams(f);
 		const muscle = p.muscle * p.stance;
@@ -37528,8 +37548,8 @@ void main() {
 			const kneeJ = f.joints["knee_" + side];
 			const ankleJ = f.joints["ankle_" + side];
 			try {
-				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 6, damp * 2.5);
-				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 4, damp * 2);
+				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 6, damp * 4.5);
+				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 4, damp * 4);
 				if (ankleJ) ankleJ.configureMotorPosition(a.ankle, muscle * .03, damp * 1.6);
 			} catch (e) {}
 		}
@@ -37542,6 +37562,37 @@ void main() {
 				x: 0,
 				y: 0,
 				z: swing * sign
+			}, true);
+			const w = arm.angvel();
+			arm.setAngvel({
+				x: w.x,
+				y: w.y,
+				z: w.z * (1 - GAIT.armDamp)
+			}, true);
+		}
+		if (f.pose) for (const key of [
+			"abdomen",
+			"chest",
+			"head"
+		]) {
+			const b = f.bodies[key];
+			const p = f.pose[key];
+			if (!b || !p || typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
+			b.setTranslation({
+				x: f.place.x + p.dx,
+				y: p.y - GAIT.crouch,
+				z: p.z
+			}, true);
+			b.setRotation(p.r, true);
+			b.setAngvel({
+				x: 0,
+				y: 0,
+				z: 0
+			}, true);
+			b.setLinvel({
+				x: 0,
+				y: 0,
+				z: 0
 			}, true);
 		}
 	}
