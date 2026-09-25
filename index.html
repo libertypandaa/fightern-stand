@@ -35310,6 +35310,7 @@ void main() {
 	var bagBodyRef = null;
 	var bagCollider = null;
 	var bagJointRef = null;
+	var groundCollider = null;
 	var bagSupport = 0;
 	var bagSupportDamping = 0;
 	var bagMassOverride = 0;
@@ -35733,7 +35734,7 @@ void main() {
 		world.numSolverIterations = SOLVER_ITERATIONS;
 		eventQueue = new Og.EventQueue(true);
 		const ground = world.createRigidBody(Og.RigidBodyDesc.fixed());
-		world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setTranslation(0, -.05, 0).setFriction(1).setCollisionGroups(GROUPS.world), ground);
+		groundCollider = world.createCollider(Og.ColliderDesc.cuboid(8, .05, 1).setTranslation(0, -.05, 0).setFriction(1).setCollisionGroups(GROUPS.world).setActiveEvents(Og.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(1), ground);
 		const groundMesh = new Mesh(new BoxGeometry(16, .1, 1), matGround);
 		groundMesh.position.set(0, -.05, 0);
 		scene.add(groundMesh);
@@ -35892,12 +35893,14 @@ void main() {
 			const x = side === "back" ? LEG_BACK_X : LEG_FRONT_X;
 			const footDesc = f.freeFeet ? Og.RigidBodyDesc.dynamic().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0))).setLinearDamping(.6).setAngularDamping(.9) : Og.RigidBodyDesc.fixed().setTranslation(...P(x, Y.ankle, 0)).setRotation(Q(quatZ(0)));
 			const foot = world.createRigidBody(footDesc);
-			addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot, {
+			const footBox = addBox(foot, L.foot / 2, .045, T, L.foot / 2 - .06, -.035, M.foot, {
 				fighter: f.id,
 				module: "foot",
 				part: "foot_" + side,
 				friction: f.freeFeet ? 1.4 : .7
 			});
+			if (!f.footColliders) f.footColliders = {};
+			f.footColliders[side] = footBox;
 			if (f.freeFeet) try {
 				foot.setAdditionalMassProperties(.6, {
 					x: L.foot / 2 - .06,
@@ -36414,6 +36417,12 @@ void main() {
 					phase: f.gait.phase,
 					moving: f.gait.moving,
 					stride: f.gait.stride,
+					cop: f.gait.cop || 0,
+					load: { ...f.gait.load || {
+						front: 0,
+						back: 0
+					} },
+					angles: f.gait.debug ? { ...f.gait.debug } : null,
 					place: f.place.x,
 					footFront: at(f.bodies.foot_front),
 					footBack: at(f.bodies.foot_back),
@@ -36898,7 +36907,13 @@ void main() {
 		const forward = f.place.turn ? -1 : 1;
 		const swayVel = SWAY.amp * 2 * Math.PI * SWAY.freq * Math.cos(2 * Math.PI * SWAY.freq * simTime + f.swayPhase);
 		const sway = SWAY.amp * Math.sin(2 * Math.PI * SWAY.freq * simTime + f.swayPhase) * forward;
-		const err = com - (f.balance.ref + sway);
+		const walking = f.gait && f.gait.moving;
+		let walkTarget = f.gait ? f.gait.support : 0;
+		const totalLoad = f.gait ? f.gait.load.front + f.gait.load.back : 0;
+		if (walking && totalLoad > 200) walkTarget = f.gait.cop;
+		const target = walking ? walkTarget : f.balance.ref + sway;
+		if (walking) f.balance.ref = walkTarget;
+		const err = com - target;
 		if (f === P1) {
 			measure.sway = sway;
 			measure.swayVel = swayVel * forward;
@@ -36908,9 +36923,12 @@ void main() {
 		bal.err += (err - bal.err) * a;
 		bal.vel += ((dt > 0 ? (com - bal.prev) / dt : 0) - bal.vel) * a;
 		bal.prev = com;
-		let torque = BALANCE.kp * bal.err + BALANCE.kd * bal.vel;
-		if (torque > BALANCE.limit) torque = BALANCE.limit;
-		if (torque < -BALANCE.limit) torque = -BALANCE.limit;
+		const kp = BALANCE.kp;
+		const kd = BALANCE.kd;
+		const limit = BALANCE.limit;
+		let torque = kp * bal.err + kd * bal.vel;
+		if (torque > limit) torque = limit;
+		if (torque < -limit) torque = -limit;
 		for (const side of ["front", "back"]) {
 			const shin = f.bodies["shin_" + side];
 			if (!shin) continue;
@@ -37344,29 +37362,44 @@ void main() {
 		return isFinite(value) && value > 0 ? value : fallback;
 	}
 	function footTarget(f, side) {
-		const p = fighterParams(f);
 		const g = f.gait;
-		const offset = p.bend / 100;
-		const base = {
-			x: 0,
-			y: Y.ankle + Math.max(0, offset) * .5
+		const plant = g.plant[side];
+		if (!g.moving || Math.abs(g.v) < .02) return {
+			x: plant.x,
+			y: Y.ankle
 		};
-		if (!g.moving || Math.abs(g.v) < .02) return base;
-		const dir = Math.sign(g.v);
-		const stride = g.stride * dir;
 		const s = (g.phase + (side === "front" ? .5 : 0)) % 1;
-		if (s < GAIT.stance) {
-			const u = s / GAIT.stance;
-			return {
-				x: base.x + stride * (.5 - u),
-				y: base.y
-			};
-		}
-		const u = (s - GAIT.stance) / (1 - GAIT.stance);
-		return {
-			x: base.x + stride * (-.5 + u),
-			y: base.y + GAIT.lift * Math.sin(Math.PI * u)
+		if (s < GAIT.stance) return {
+			x: plant.x,
+			y: Y.ankle
 		};
+		const u = (s - GAIT.stance) / (1 - GAIT.stance);
+		const from = g.from[side];
+		return {
+			x: from.x + (plant.x - from.x) * u,
+			y: Y.ankle + GAIT.lift * Math.sin(Math.PI * u)
+		};
+	}
+	function footLoads(f, dt) {
+		const out = {
+			front: 0,
+			back: 0
+		};
+		if (!groundCollider || !f.footColliders) return out;
+		for (const side of ["front", "back"]) {
+			const col = f.footColliders[side];
+			if (!col) continue;
+			let imp = 0;
+			world.narrowPhase.contactPair(col.handle, groundCollider.handle, (manifold) => {
+				const num = manifold.numContacts();
+				for (let i = 0; i < num; i++) {
+					const v = manifold.contactImpulse(i);
+					if (v > 0) imp += v;
+				}
+			});
+			out[side] = imp / Math.max(1e-6, dt);
+		}
+		return out;
 	}
 	function legAngles(f, side, target) {
 		const p = fighterParams(f);
@@ -37376,10 +37409,8 @@ void main() {
 		const L1 = zoneLen("thigh", 1), L2 = zoneLen("shin", 1);
 		const turn = f.place.turn ? -1 : 1;
 		const hip = thigh.translation();
-		const hipX = (hip.x - f.place.x) * turn;
-		const footX = target.x;
 		const footY = target.y;
-		const dx = footX - hipX;
+		const dx = (target.x - hip.x) * turn;
 		const dy = footY - hip.y;
 		let d = Math.hypot(dx, dy);
 		const maxD = (L1 + L2) * .93;
@@ -37407,6 +37438,38 @@ void main() {
 	}
 	function walkStep(f, dt) {
 		const g = f.gait;
+		if (!g.home) {
+			fighterParams(f);
+			g.home = {
+				front: LEG_FRONT_X,
+				back: LEG_BACK_X
+			};
+			g.plant = {
+				front: {
+					x: f.place.x + LEG_FRONT_X,
+					y: Y.ankle
+				},
+				back: {
+					x: f.place.x + LEG_BACK_X,
+					y: Y.ankle
+				}
+			};
+			g.from = {
+				front: {
+					x: g.plant.front.x,
+					y: Y.ankle
+				},
+				back: {
+					x: g.plant.back.x,
+					y: Y.ankle
+				}
+			};
+			g.load = {
+				front: 0,
+				back: 0
+			};
+			g.cop = 0;
+		}
 		const v = Math.max(-GAIT.maxSpeed, Math.min(GAIT.maxSpeed, g.v));
 		g.moving = Math.abs(v) > .02;
 		if (!g.moving) {
@@ -37414,34 +37477,59 @@ void main() {
 			return;
 		}
 		g.stride = GAIT.cycle * GAIT.stance * Math.abs(v);
+		const step = GAIT.cycle * .5 * Math.abs(v);
+		const dir = Math.sign(v);
+		const prevPhase = g.phase;
 		g.phase = (g.phase + dt / GAIT.cycle) % 1;
-		const dx = v * dt;
-		const hips = ["front", "back"].map((s) => f.bodies["thigh_" + s]).filter(Boolean).map((b) => b.translation().y);
-		const hipY = hips.length ? hips.reduce((a, b) => a + b, 0) / hips.length : Y.hip;
-		let dy = Y.hip - GAIT.crouch - hipY;
-		dy = Math.max(-GAIT.rail, Math.min(GAIT.rail, dy));
-		for (const b of Object.values(f.bodies)) {
-			if (!b) continue;
-			const t = b.translation();
-			b.setTranslation({
-				x: t.x + dx,
-				y: t.y + dy,
-				z: t.z
-			}, true);
+		for (const side of ["front", "back"]) {
+			const off = side === "front" ? .5 : 0;
+			const a = (prevPhase + off) % 1;
+			const b = (g.phase + off) % 1;
+			if (a <= GAIT.stance && (b > GAIT.stance || b < a)) {
+				g.from[side] = {
+					x: g.plant[side].x,
+					y: Y.ankle
+				};
+				const bodyX = fighterComX(f);
+				g.plant[side] = {
+					x: bodyX + step * dir,
+					y: Y.ankle
+				};
+			}
 		}
-		f.place.x += dx;
+		g.load = footLoads(f, dt);
+		const totalLoad = g.load.front + g.load.back;
+		const footFrontX = f.bodies.foot_front ? f.bodies.foot_front.translation().x : f.place.x;
+		const footBackX = f.bodies.foot_back ? f.bodies.foot_back.translation().x : f.place.x;
+		if (totalLoad > 1) g.cop = (g.load.front * footFrontX + g.load.back * footBackX) / totalLoad;
+		{
+			const inStance = (side) => {
+				return (g.phase + (side === "front" ? .5 : 0)) % 1 < GAIT.stance;
+			};
+			const wf = inStance("front") ? 1 : 0;
+			const wb = inStance("back") ? 1 : 0;
+			const sum = wf + wb;
+			g.support = sum > 0 ? (wf * g.plant.front.x + wb * g.plant.back.x) / sum : (g.plant.front.x + g.plant.back.x) / 2;
+		}
 		const p = fighterParams(f);
 		const muscle = p.muscle * p.stance;
 		const damp = Math.sqrt(p.muscle / 900) * 60 * p.stance;
 		for (const side of ["front", "back"]) {
 			const a = legAngles(f, side, footTarget(f, side));
 			if (!a) continue;
+			if (!g.debug) g.debug = {};
+			g.debug[side] = {
+				hip: +a.hip.toFixed(3),
+				knee: +a.knee.toFixed(3),
+				ankle: +a.ankle.toFixed(3),
+				r: +a.reach.toFixed(3)
+			};
 			const hipJ = f.joints["hip_" + side];
 			const kneeJ = f.joints["knee_" + side];
 			const ankleJ = f.joints["ankle_" + side];
 			try {
-				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 1.6, damp * 2);
-				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 1.2, damp * 1.6);
+				if (hipJ) hipJ.configureMotorPosition(a.hip, muscle * 6, damp * 2.5);
+				if (kneeJ) kneeJ.configureMotorPosition(a.knee, muscle * 4, damp * 2);
 				if (ankleJ) ankleJ.configureMotorPosition(a.ankle, muscle * .03, damp * 1.6);
 			} catch (e) {}
 		}
