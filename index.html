@@ -161,6 +161,7 @@
   <div class="row"><span class="dim">Импульс движка</span><b id="c-engine">—</b></div>
   <div class="row"><span class="dim">Импульс формулы</span><b id="c-formula">—</b></div>
   <div class="row"><span class="dim">Расхождение</span><b id="c-diverge">—</b></div>
+  <div class="row"><span class="dim">Решение порога</span><b id="c-decide">—</b></div>
   <div class="row"><span class="dim">Пиковая сила контакта</span><b id="c-peak">—</b></div>
 </div>
 
@@ -35207,6 +35208,7 @@ void main() {
 		cEngine: document.getElementById("c-engine"),
 		cFormula: document.getElementById("c-formula"),
 		cDiverge: document.getElementById("c-diverge"),
+		cDecide: document.getElementById("c-decide"),
 		cPeak: document.getElementById("c-peak")
 	};
 	var renderer = new WebGLRenderer({ antialias: true });
@@ -35260,6 +35262,10 @@ void main() {
 	var bagMaterial = null;
 	var bagBodyRef = null;
 	var bagCollider = null;
+	var bagJointRef = null;
+	var bagSupport = 0;
+	var bagSupportDamping = 0;
+	var bagMassOverride = 0;
 	var flashUntil = 0;
 	var lastHand = null;
 	var lastHandVel = null;
@@ -35706,10 +35712,11 @@ void main() {
 		meshes.bag = null;
 		bagBodyRef = null;
 		bagCollider = null;
+		bagJointRef = null;
 		if (!bagHidden) {
 			const anchor = world.createRigidBody(Og.RigidBodyDesc.fixed().setTranslation(bagX, BAG.topY, 0));
 			const bagBody = world.createRigidBody(Og.RigidBodyDesc.dynamic().setTranslation(bagX, BAG.topY - BAG.hy, 0).setLinearDamping(.05).setAngularDamping(.05));
-			targetMass = targetFromZone ? ZONE[p.zone].frac * BODY_MASS * (PAIRED_ZONES.includes(p.zone) ? 2 : 1) : BAG.mass;
+			targetMass = bagMassOverride > 0 ? bagMassOverride : targetFromZone ? ZONE[p.zone].frac * BODY_MASS * (PAIRED_ZONES.includes(p.zone) ? 2 : 1) : BAG.mass;
 			bagCollider = addBox(bagBody, BAG.hx, BAG.hy, BAG.hz, 0, 0, targetMass, {
 				friction: .8,
 				restitution: .2,
@@ -35729,7 +35736,10 @@ void main() {
 				y: 0,
 				z: 1
 			});
-			world.createImpulseJoint(bagJoint, anchor, bagBody, true);
+			bagJointRef = world.createImpulseJoint(bagJoint, anchor, bagBody, true);
+			if (bagSupport > 0) try {
+				bagJointRef.configureMotorPosition(0, bagSupport, bagSupportDamping);
+			} catch (e) {}
 			bagMaterial = matPad.clone();
 			meshes.bag = new Mesh(new BoxGeometry(BAG.hx * 2, BAG.hy * 2, BAG.hz * 2), bagMaterial);
 			meshes.bag.position.set(bagX, BAG.topY - BAG.hy, 0);
@@ -36317,6 +36327,8 @@ void main() {
 				return press;
 			},
 			contact: () => oppSummary(),
+			decide,
+			thresholds: () => ({ ...INTERVENE }),
 			resetContact: () => {
 				resetOpp();
 				return oppSummary();
@@ -36429,9 +36441,23 @@ void main() {
 			setContactMode: (mode) => {
 				solidModules = mode === "solver";
 				applyAnalytic = !solidModules;
+				oppContact = solidModules || bagHidden;
 				build();
 				return solidModules ? "solver" : "analytic";
 			},
+			setBagSupport: (k, damping) => {
+				bagSupport = Math.max(0, k || 0);
+				bagSupportDamping = Math.max(0, damping === void 0 ? bagSupport * .05 : damping);
+				build();
+				return bagSupport;
+			},
+			readBagSupport: () => bagSupport,
+			setBagMass: (m) => {
+				bagMassOverride = Math.max(0, m || 0);
+				build();
+				return targetMass;
+			},
+			readBagMass: () => targetMass,
 			readTargetMass: () => targetMass,
 			stepOpponent: (dx) => {
 				opponentX += dx;
@@ -37017,8 +37043,9 @@ void main() {
 	function savePrevVelocities() {
 		if (!oppContact) return;
 		PREV_VEL.clear();
-		for (const info of COLLIDER_INFO.values()) {
-			const b = info.body;
+		const bodies = [bagBodyRef];
+		for (const info of COLLIDER_INFO.values()) bodies.push(info.body);
+		for (const b of bodies) {
 			if (!b || PREV_VEL.has(b)) continue;
 			if (typeof b.isDynamic !== "function" || !b.isDynamic()) continue;
 			const v = b.linvel(), w = b.angvel(), c = b.worldCom();
@@ -37099,8 +37126,59 @@ void main() {
 	function seriousMass(value, fallback) {
 		return isFinite(value) && value > 0 ? value : fallback;
 	}
+	function contactKind() {
+		if (!opp.started) return null;
+		return opp.approach >= .5 ? "удар" : "упор";
+	}
+	var INTERVENE = {
+		strike: .25,
+		push: .2
+	};
+	function decide() {
+		const kind = contactKind();
+		if (!kind) return {
+			kind: null,
+			intervene: false,
+			divergence: 0,
+			metric: "—"
+		};
+		const s = oppSummary();
+		const checks = [];
+		if (kind === "удар") checks.push({
+			metric: "импульс",
+			value: s.engineImpact,
+			model: s.formulaModel,
+			divergence: s.divergenceModel,
+			threshold: INTERVENE.strike,
+			intervene: !(Math.abs(s.divergenceModel) <= INTERVENE.strike)
+		});
+		const applied = Math.max(0, opp.appliedForce || 0);
+		if (applied > 1e-6 && s.duration > .03) {
+			const divergence = s.meanForce / applied - 1;
+			checks.push({
+				metric: "сила",
+				value: s.meanForce,
+				model: applied,
+				divergence,
+				threshold: INTERVENE.push,
+				intervene: divergence > INTERVENE.push
+			});
+		}
+		const bad = checks.find((c) => c.intervene);
+		const shown = bad || checks[0] || {};
+		return {
+			kind,
+			checks,
+			metric: shown.metric || "—",
+			value: shown.value || 0,
+			model: shown.model || 0,
+			divergence: shown.divergence || 0,
+			threshold: shown.threshold || 0,
+			intervene: !!bad
+		};
+	}
 	function collectOppContact(dt) {
-		if (!oppContact || !P1.bodies.chest || !P2.bodies.chest) return;
+		if (!oppContact || !P1.bodies.chest) return;
 		let stepImpulse = 0;
 		let best = null;
 		const worldPoint = (handle, local) => {
@@ -37127,35 +37205,49 @@ void main() {
 				z: t.z + r.z
 			};
 		};
+		const bagTarget = bagCollider && bagBodyRef ? {
+			fighter: "bag",
+			module: "bag",
+			part: "груша",
+			body: bagBodyRef,
+			handle: bagCollider.handle
+		} : null;
+		const readPair = (h, h2, target) => {
+			world.narrowPhase.contactPair(h, h2, (manifold, flipped) => {
+				const num = manifold.numContacts();
+				const raw = manifold.normal();
+				for (let i = 0; i < num; i++) {
+					const imp = manifold.contactImpulse(i);
+					if (!(imp > 0)) continue;
+					stepImpulse += imp;
+					if (!best || imp > best.impulse) {
+						const sign = flipped ? -1 : 1;
+						const point = worldPoint(flipped ? h2 : h, manifold.localContactPoint1(i));
+						best = {
+							impulse: imp,
+							normal: {
+								x: raw.x * sign,
+								y: raw.y * sign,
+								z: raw.z * sign
+							},
+							point,
+							a: COLLIDER_INFO.get(h),
+							b: target
+						};
+					}
+				}
+			});
+		};
 		for (const [h, info] of COLLIDER_INFO) {
 			if (info.fighter !== P1.id) continue;
+			if (bagTarget) world.narrowPhase.contactPairsWith(h, (h2) => {
+				if (h2 === bagTarget.handle) readPair(h, h2, bagTarget);
+			});
+			if (!P2.bodies.chest) continue;
 			world.narrowPhase.contactPairsWith(h, (h2) => {
 				const t = COLLIDER_INFO.get(h2);
 				if (!t || t.fighter !== P2.id) return;
-				world.narrowPhase.contactPair(h, h2, (manifold, flipped) => {
-					const num = manifold.numContacts();
-					const raw = manifold.normal();
-					for (let i = 0; i < num; i++) {
-						const imp = manifold.contactImpulse(i);
-						if (!(imp > 0)) continue;
-						stepImpulse += imp;
-						if (!best || imp > best.impulse) {
-							const sign = flipped ? -1 : 1;
-							const point = worldPoint(flipped ? h2 : h, manifold.localContactPoint1(i));
-							best = {
-								impulse: imp,
-								normal: {
-									x: raw.x * sign,
-									y: raw.y * sign,
-									z: raw.z * sign
-								},
-								point,
-								a: info,
-								b: t
-							};
-						}
-					}
-				});
+				readPair(h, h2, t);
 			});
 		}
 		if (!(stepImpulse > 0)) {
@@ -37232,6 +37324,12 @@ void main() {
 			opp.J0 = (1 + opp.e) * muRigid * v;
 			opp.J = opp.J0 * opp.jointLoss;
 			opp.Jchain = (1 + opp.e) * muChain * v * opp.jointLoss;
+			opp.supported = best.b.fighter === "bag" ? bagSupport > 0 ? 1 : 0 : 1;
+			const muModel = 1 / (1 / opp.mEffA + (opp.supported ? 0 : 1 / opp.mEffB));
+			opp.muModel = muModel;
+			opp.Jmodel = (1 + opp.e) * muModel * v;
+			const muModelChain = 1 / (1 / opp.chainA + (opp.supported ? 0 : 1 / opp.chainB));
+			opp.JmodelChain = (1 + opp.e) * muModelChain * v;
 			opp.heldImpulse = (1 + opp.e) * opp.mEffA * v;
 			opp.targetBody = best.b.body;
 			const c = best.b.body.worldCom();
@@ -37298,6 +37396,11 @@ void main() {
 			formulaStand: opp.J,
 			formulaChain: opp.Jchain,
 			formulaHeld: opp.heldImpulse,
+			formulaModel: opp.Jmodel,
+			formulaModelChain: opp.JmodelChain,
+			muModel: opp.muModel,
+			supported: opp.supported,
+			kind: opp.started ? contactKind() : null,
 			e: opp.e,
 			contactMs: opp.contactMs,
 			jointLoss: opp.jointLoss,
@@ -37306,6 +37409,7 @@ void main() {
 			divergenceRigid: rel(opp.impulseImpact, opp.J0),
 			divergenceStand: rel(opp.impulseImpact, opp.J),
 			divergenceHeld: rel(opp.impulseImpact, opp.heldImpulse),
+			divergenceModel: rel(opp.impulseImpact, opp.Jmodel),
 			divergenceTotal: rel(opp.impulse, opp.J0),
 			totalVsStand: rel(opp.impulse, opp.J),
 			comShiftP1: +(p1 - start.p1).toFixed(4),
@@ -37392,6 +37496,11 @@ void main() {
 		opp.strikerEnd = 0;
 		opp.targetBody = null;
 		opp.heldImpulse = 0;
+		opp.supported = 0;
+		opp.muModel = 0;
+		opp.Jmodel = 0;
+		opp.appliedForce = 0;
+		opp.JmodelChain = 0;
 		opp.startCom = {
 			p1: fighterComX(P1),
 			p2: P2.bodies.chest ? fighterComX(P2) : 0
@@ -37455,6 +37564,7 @@ void main() {
 			push.elapsed += dt;
 			if (push.elapsed >= push.total) push.active = false;
 		}
+		if (push.active && push.legTorque) opp.appliedForce = Math.abs(push.legTorque / LEG_LEVER);
 		const prevHand = lastHand;
 		const prevVel = lastHandVel;
 		for (const f of activeFighters()) balanceStep(f, dt);
@@ -37565,15 +37675,20 @@ void main() {
 			ui.cEngine.textContent = "—";
 			ui.cFormula.textContent = "—";
 			ui.cDiverge.textContent = "—";
+			if (ui.cDecide) ui.cDecide.textContent = "—";
 			ui.cPeak.textContent = "—";
 			return;
 		}
 		ui.cParts.textContent = (s.partA || "?") + " о " + (s.partB || "?");
 		ui.cApproach.textContent = s.approach.toFixed(2) + " м/с";
 		ui.cEngine.textContent = s.engineImpact.toFixed(2) + " Н·с";
-		ui.cFormula.textContent = s.formulaStand.toFixed(2) + " Н·с";
-		ui.cDiverge.textContent = isFinite(s.divergenceStand) ? (s.divergenceStand > 0 ? "+" : "") + Math.round(s.divergenceStand * 100) + "%" : "—";
+		ui.cFormula.textContent = s.formulaModel.toFixed(2) + " Н·с" + (s.supported ? ", цель держится" : ", цель свободна");
+		ui.cDiverge.textContent = isFinite(s.divergenceModel) ? (s.divergenceModel > 0 ? "+" : "") + Math.round(s.divergenceModel * 100) + "%" : "—";
 		ui.cPeak.textContent = Math.round(s.peakForce) + " Н";
+		if (ui.cDecide) {
+			const d = decide();
+			ui.cDecide.textContent = d.kind ? d.intervene ? "вмешаться — " + d.metric : "норма — " + d.metric : "—";
+		}
 	}
 	function syncBodies(store, map) {
 		for (const key of Object.keys(store)) {
