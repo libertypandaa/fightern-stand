@@ -40,7 +40,7 @@
 
   /* Джойстик: тянем за шайбу, боец идёт. */
   #stick {
-    position: fixed; left: 50%; bottom: 18px; margin-left: -65px; width: 130px; height: 130px;
+    position: fixed; left: 300px; bottom: 24px; margin: 0; width: 130px; height: 130px;
     border-radius: 50%; background: rgba(20,24,31,.72); border: 1px solid #2c323d;
     box-shadow: inset 0 0 22px rgba(0,0,0,.45); touch-action: none; z-index: 6;
   }
@@ -50,7 +50,7 @@
     box-shadow: 0 2px 8px rgba(0,0,0,.5); pointer-events: none;
   }
   #stick-label {
-    position: fixed; left: 50%; bottom: 152px; margin-left: -65px; width: 130px; text-align: center;
+    position: fixed; left: 300px; bottom: 158px; margin: 0; width: 130px; text-align: center;
     color: #7c8598; font-size: 11px; pointer-events: none; z-index: 6;
   }
 
@@ -101,7 +101,7 @@
     input[type=range] { height: 30px; }
     #toggle-params, #toggle-readout { display: block; }
     #punch-mobile { display: flex; }
-    #stick { left: 20px; bottom: 20px; margin-left: 0; width: 138px; height: 138px; }
+    #stick { left: 16px; bottom: 16px; margin: 0; width: 138px; height: 138px; }
     #stick-knob { width: 58px; height: 58px; margin: -29px 0 0 -29px; }
     #stick-label { display: none; }
     #hint { display: none; }
@@ -111,14 +111,16 @@
   @media (pointer: coarse) and (orientation: landscape) {
     #controls { top: 50px; width: min(60vw, 300px); max-height: 74vh; }
     #readout { top: 50px; width: min(52vw, 280px); max-height: 74vh; }
-    #stick { width: 126px; height: 126px; left: 16px; bottom: 14px; }
+    #stick { left: 14px; bottom: 14px; margin: 0; width: 126px; height: 126px; }
     #stick-knob { width: 54px; height: 54px; margin: -27px 0 0 -27px; }
     #punch-mobile { right: 16px; bottom: 14px; width: 126px; height: 68px; }
   }
-  @media (max-width: 780px), (orientation: portrait) {
-    #stick { width: 96px; height: 96px; margin-left: -48px; bottom: calc(50vh + 12px); }
-    #stick-knob { width: 40px; height: 40px; margin: -20px 0 0 -20px; }
-    #stick-label { bottom: auto; top: calc(50vh + 112px); width: 96px; margin-left: -48px; font-size: 10px; }
+  /* Узкий экран (в том числе телефон): джойстик всегда в левом нижнем углу.
+     Никаких «половина высоты» — из-за этого на телефоне он уезжал наверх. */
+  @media (max-width: 1100px) {
+    #stick { left: 18px; bottom: 18px; margin: 0; width: 120px; height: 120px; }
+    #stick-knob { width: 48px; height: 48px; margin: -24px 0 0 -24px; }
+    #stick-label { display: none; }
   }
   summary {
     cursor: pointer; list-style: none; font-size: 11px; letter-spacing: .08em;
@@ -164,7 +166,7 @@
   <input type="range" id="step-x" min="-20" max="40" step="1" value="0" />
   <label>Второй боец: шаг навстречу, см <span class="val" id="v-step2">0</span></label>
   <input type="range" id="step-2" min="-40" max="20" step="1" value="0" />
-  <label><input type="checkbox" id="second" checked /> второй боец напротив</label>
+  <label><input type="checkbox" id="second" /> второй боец напротив</label>
   <label><input type="checkbox" id="contact" /> груша на стенде (мешок)</label>
   <label><input type="checkbox" id="guard" /> второй держит блок</label>
   <label><input type="checkbox" id="second-body" /> второй боец — своё тело (тяжёлое и вязкое)</label>
@@ -264,7 +266,7 @@
 <div class="pill" id="toggle-readout">замеры</div>
 <div class="pill" id="punch-mobile">Удар</div>
 <div id="topbar">
-  <div class="pill" id="toggle-opponent">оппонент: есть</div>
+  <div class="pill" id="toggle-opponent">оппонент: нет</div>
   <div class="pill" id="restart">начать сначала</div>
 </div>
 
@@ -35268,7 +35270,7 @@ void main() {
 	var damage = P1.damage;
 	var broken = P1.broken;
 	var stamina = P1.stamina;
-	var secondFighter = true;
+	var secondFighter = false;
 	var secondX = SECOND_X;
 	function activeFighters() {
 		return secondFighter ? [P1, P2] : [P1];
@@ -38620,7 +38622,7 @@ void main() {
 		p2Params = null;
 		guard = null;
 		press = null;
-		secondFighter = true;
+		secondFighter = false;
 		bagHidden = true;
 		oppContact = true;
 		solidModules = true;
@@ -38664,7 +38666,7 @@ void main() {
 		ui.strikeTime.value = Math.round(st.contactMs);
 		ui.vStrikeRest.textContent = (+ui.strikeRest.value).toFixed(2);
 		ui.vStrikeTime.textContent = ui.strikeTime.value;
-		ui.second.checked = true;
+		ui.second.checked = false;
 		ui.contact.checked = false;
 		ui.guard.checked = false;
 		ui.secondBody.checked = false;
